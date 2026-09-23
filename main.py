@@ -91,7 +91,10 @@ def main():
         poll_interval=Config.POLL_INTERVAL,
         volume_threshold=Config.VOLUME_THRESHOLD,
         volume_cooldown=Config.VOLUME_COOLDOWN,
-        price_reset_threshold=0.005  # 0.5% отхода цены для сброса триггера
+        price_reset_threshold=0.005,
+        candle_interval=Config.CANDLE_INTERVAL,
+        candle_periods=Config.CANDLE_PERIODS,
+        candle_volume_multiplier=Config.CANDLE_VOLUME_MULTIPLIER
     )
     logger.info("✅ Монитор инициализирован")
 

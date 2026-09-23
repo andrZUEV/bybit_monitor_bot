@@ -49,7 +49,10 @@ class Monitor:
         poll_interval: float = 4.0,
         volume_threshold: float = 5.0,
         volume_cooldown: float = 300.0,
-        price_reset_threshold: float = 0.005
+        price_reset_threshold: float = 0.005,
+        candle_interval: str = "15",
+        candle_periods: int = 20,
+        candle_volume_multiplier: float = 3.0
     ):
         self.alerts_manager = alerts_manager
         self.on_alert = on_alert_callback
@@ -58,10 +61,15 @@ class Monitor:
         self.volume_cooldown = volume_cooldown
         self.price_reset_threshold = price_reset_threshold
         
+        # Новые параметры для анализа свечей
+        self.candle_interval = candle_interval
+        self.candle_periods = candle_periods
+        self.candle_volume_multiplier = candle_volume_multiplier
+        
         self.client = BybitClient()
         self.states: Dict[str, AssetState] = {}
         self._running = False
-        self._poll_count = 0  # Счетчик опросов
+        self._poll_count = 0
     
     def _check_price_cross(self, asset: Asset, ticker: TickerData, state: AssetState):
         if state.prev_price is None:
@@ -96,9 +104,17 @@ class Monitor:
             if should_alert and not is_triggered:
                 cross_text = "🟢 СНИЗУ ВВЕРХ" if cross_type == CrossDirection.UP else "🔴 СВЕРХУ ВНИЗ"
                 
-                vol_change = 0.0
-                if state.prev_volume and state.prev_volume > 0:
-                    vol_change = ((ticker.volume_24h - state.prev_volume) / state.prev_volume) * 100
+                # <-- НОВОЕ: Получаем отношение объема свечи
+                vol_data = self.client.get_candle_volume_ratio(
+                    asset.symbol, asset.category,
+                    self.candle_interval, self.candle_periods
+                )
+                
+                if vol_data:
+                    ratio = vol_data["ratio"]
+                    vol_text = f"📊 Объём свечи: <b>{ratio:.1f}x</b> от среднего ({self.candle_interval}m)"
+                else:
+                    vol_text = "📊 Объём свечи: нет данных"
                 
                 note_text = f"\n📝 <b>Сетап:</b> <code>{rule.setup_note}</code>" if rule.setup_note else ""
                 
@@ -107,7 +123,7 @@ class Monitor:
                     f"Уровень: <code>{target:,.2f}</code>\n"
                     f"Направление: {cross_text}\n"
                     f"💰 Цена: <code>{curr:,.2f}</code>\n"
-                    f"📊 Объём: <code>{vol_change:+.2f}%</code>"
+                    f"{vol_text}"
                     f"{note_text}"
                 )
                 
@@ -117,49 +133,55 @@ class Monitor:
                     category=asset.category,
                     current_price=curr,
                     message=message,
-                    extra={'target': target, 'direction': direction, 'volume_change': vol_change}
+                    extra={'target': target, 'direction': direction, 'volume_ratio': vol_data['ratio'] if vol_data else 0}
                 )
                 
                 self.on_alert(event)
                 state.triggered_alerts[alert_key] = True
                 logger.info(f"🔔 Алерт сработал: {asset.symbol} @ {target} {direction}")
     
-    def _check_volume_change(self, asset: Asset, ticker: TickerData, state: AssetState):
-        if state.prev_volume is None or state.prev_volume <= 0:
+    def _check_candle_volume(self, asset: Asset, ticker: TickerData, state: AssetState):
+        """Проверяет аномальный объем текущей свечи"""
+        vol_data = self.client.get_candle_volume_ratio(
+            asset.symbol, asset.category,
+            self.candle_interval, self.candle_periods
+        )
+        
+        if not vol_data:
             return
         
-        vol_change_pct = ((ticker.volume_24h - state.prev_volume) / state.prev_volume) * 100
+        ratio = vol_data["ratio"]
         
-        if abs(vol_change_pct) < self.volume_threshold:
+        # Проверяем, превышает ли объем порог
+        if ratio < self.candle_volume_multiplier:
             return
         
+        # Кулдаун
         now = time.time()
         if now - state.last_volume_alert_time < self.volume_cooldown:
             return
         
-        direction_text = "📈 ВЫРОС" if vol_change_pct > 0 else "📉 УПАЛ"
-        
         message = (
-            f"⚡️ <b>Volume Alert: {asset.symbol}</b>\n"
-            f"Объём {direction_text} на <code>{abs(vol_change_pct):.2f}%</code>\n"
+            f"⚡️ <b>Candle Volume Alert: {asset.symbol}</b>\n"
+            f"Объём свечи: <b>{ratio:.1f}x</b> от среднего\n"
+            f"Таймфрейм: {self.candle_interval}m\n"
             f"💰 Цена: <code>{ticker.price:,.2f}</code>"
         )
         
         event = AlertEvent(
-            event_type='volume_change',
+            event_type='candle_volume',
             symbol=asset.symbol,
             category=asset.category,
             current_price=ticker.price,
             message=message,
-            extra={'volume_change': vol_change_pct}
+            extra={'volume_ratio': ratio, 'interval': self.candle_interval}
         )
         
         self.on_alert(event)
         state.last_volume_alert_time = now
-        logger.info(f"⚡️ Volume alert: {asset.symbol} {vol_change_pct:+.2f}%")
+        logger.info(f"⚡️ Candle volume alert: {asset.symbol} {ratio:.1f}x")
     
     def _poll_once(self):
-        """Один цикл опроса всех активов"""
         self.alerts_manager.load()
         assets = self.alerts_manager.get_all_alerts()
         
@@ -167,10 +189,8 @@ class Monitor:
             return
         
         self._poll_count += 1
-        
-        # <-- НОВОЕ: Логируем КАЖДЫЙ цикл опроса
-        symbols = [a.symbol for a in assets]
-        logger.info(f"📡 Опрос #{self._poll_count} | Активов: {len(assets)} | {', '.join(symbols)}")
+        if self._poll_count % 15 == 0:
+            logger.info(f"📡 Опрос #{self._poll_count} | Активов: {len(assets)}")
         
         for asset in assets:
             symbol = asset.symbol
@@ -185,18 +205,18 @@ class Monitor:
                 continue
             
             self._check_price_cross(asset, ticker, state)
-            self._check_volume_change(asset, ticker, state)
+            self._check_candle_volume(asset, ticker, state)
             
             state.prev_price = ticker.price
             state.prev_volume = ticker.volume_24h
     
     def start(self):
-        """Запускает цикл мониторинга (блокирующий)"""
         self._running = True
         logger.info(
             f"🚀 Мониторинг запущен. "
             f"Интервал: {self.poll_interval}s, "
-            f"Порог объёма: {self.volume_threshold}%"
+            f"Свечи: {self.candle_interval}m, "
+            f"Порог объема: {self.candle_volume_multiplier}x"
         )
         
         try:
@@ -209,12 +229,11 @@ class Monitor:
                 time.sleep(self.poll_interval)
         
         except KeyboardInterrupt:
-            logger.info("🛑 Мониторинг остановлен пользователем")
+            logger.info(" Мониторинг остановлен пользователем")
         finally:
             self._running = False
     
     def stop(self):
-        """Останавливает мониторинг"""
         self._running = False
         logger.info("Мониторинг останавливается...")
 
@@ -230,7 +249,6 @@ if __name__ == "__main__":
     test_file = "data/test_monitor_alerts.json"
     manager = AlertsManager(test_file)
     manager.clear_all()
-    
     manager.add_alert("BTCUSDT", 85000, "up")
     
     def on_alert(event: AlertEvent):
@@ -240,8 +258,9 @@ if __name__ == "__main__":
         alerts_manager=manager,
         on_alert_callback=on_alert,
         poll_interval=3.0,
-        volume_threshold=0.01,
-        volume_cooldown=5.0
+        candle_interval="15",
+        candle_periods=20,
+        candle_volume_multiplier=3.0
     )
     
     print("📡 Запускаем мониторинг на 15 секунд...\n")

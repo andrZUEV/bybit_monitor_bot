@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TickerData:
-    """Структура данных тикера"""
     symbol: str
     price: float
     volume_24h: float
@@ -26,11 +25,10 @@ class TickerData:
 
 @dataclass
 class ScreenerAsset:
-    """Актив для скринера с расширенными данными"""
     symbol: str
     price: float
-    price_change_24h: float  # в процентах
-    volume_24h: float         # объем в USDT
+    price_change_24h: float
+    volume_24h: float
     high_24h: float
     low_24h: float
     category: str
@@ -49,6 +47,10 @@ class BybitClient:
         })
         self._last_request_time = 0
         self._min_request_interval = 0.1
+        
+        # Кэш для объема свечей (чтобы не долбить API каждый опрос)
+        self._volume_cache: Dict[str, tuple] = {}
+        self._volume_cache_ttl = 60  # 1 минута
     
     def _rate_limit(self):
         current_time = time.time()
@@ -87,7 +89,6 @@ class BybitClient:
             volume = float(item.get("volume24h", 0))
             timestamp = int(item.get("time", 0))
             
-            # <-- ВАЖНО: этот лог показывает получение данных
             logger.info(f"📥 {symbol}: 💰 {price:,.4f} | 📊 Vol: {volume:,.2f}")
             
             return TickerData(
@@ -100,12 +101,87 @@ class BybitClient:
             logger.error(f"Ошибка получения тикера {symbol}: {e}")
             return None
     
+    def get_candle_volume_ratio(
+        self,
+        symbol: str,
+        category: str = "linear",
+        interval: str = "15",
+        periods: int = 20
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Возвращает отношение объема текущей свечи к среднему объему предыдущих свечей
+        
+        Args:
+            symbol: Тикер
+            category: Категория (linear/spot)
+            interval: Таймфрейм свечи в минутах (1, 3, 5, 15, 30, 60, 120, 240)
+            periods: Количество предыдущих свечей для расчета среднего
+            
+        Returns:
+            Dict с ratio, current_volume, avg_volume или None при ошибке
+        """
+        try:
+            # Проверяем кэш
+            cache_key = f"{symbol}_{category}_{interval}_{periods}"
+            cached = self._volume_cache.get(cache_key)
+            if cached and (time.time() - cached[0]) < self._volume_cache_ttl:
+                return cached[1]
+            
+            params = {
+                "category": category,
+                "symbol": symbol.upper(),
+                "interval": interval,
+                "limit": periods + 1  # +1 для текущей свечи
+            }
+            data = self._make_request("/v5/market/kline", params)
+            
+            candles = data.get("result", {}).get("list", [])
+            if len(candles) < periods + 1:
+                logger.warning(f"Недостаточно свечей для {symbol}")
+                return None
+            
+            # Bybit возвращает свечи от новых к старым
+            # candles[0] - текущая (незавершенная) свеча
+            # candles[1:] - предыдущие завершенные свечи
+            
+            current_candle = candles[0]
+            previous_candles = candles[1:periods+1]
+            
+            # index 6 = turnover (объем в USDT), index 5 = volume (в базовой валюте)
+            current_volume = float(current_candle[6])
+            previous_volumes = [float(c[6]) for c in previous_candles]
+            
+            avg_volume = sum(previous_volumes) / len(previous_volumes)
+            
+            if avg_volume == 0:
+                ratio = 0
+            else:
+                ratio = current_volume / avg_volume
+            
+            result = {
+                "ratio": ratio,
+                "current_volume": current_volume,
+                "avg_volume": avg_volume,
+                "interval": interval
+            }
+            
+            # Сохраняем в кэш
+            self._volume_cache[cache_key] = (time.time(), result)
+            
+            logger.debug(f" {symbol} volume ratio: {ratio:.2f}x (interval: {interval}m)")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Ошибка получения объема свечи {symbol}: {e}")
+            return None
+    
     def get_screener_data(
         self,
         category: str = "linear",
         sort_by: str = "volume_desc",
         min_volume_usd: float = 1_000_000,
-        min_change_abs: float = 0.0,  # <-- НОВОЕ: минимальное изменение по модулю (%)
+        min_change_abs: float = 0.0,
         limit: int = 15
     ) -> List[ScreenerAsset]:
         try:
@@ -119,13 +195,12 @@ class BybitClient:
                     if not symbol.endswith("USDT"):
                         continue
                     
-                    volume = float(item.get("turnover24h", 0))  # Оборот в USDT
+                    volume = float(item.get("turnover24h", 0))
                     if volume < min_volume_usd:
                         continue
                     
                     price_change = float(item.get("price24hPcnt", 0)) * 100
                     
-                    # <-- НОВОЕ: Фильтр по абсолютному изменению (не важно + или -)
                     if abs(price_change) < min_change_abs:
                         continue
                     
@@ -141,7 +216,6 @@ class BybitClient:
                 except (ValueError, TypeError):
                     continue
             
-            # Сортировка
             if sort_by == "price_change_desc":
                 assets.sort(key=lambda x: x.price_change_24h, reverse=True)
             elif sort_by == "price_change_asc":
@@ -167,8 +241,12 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     client = BybitClient()
     
-    print("🧪 Тест скринера:\n")
-    assets = client.get_screener_data(category="linear", sort_by="price_change_desc", limit=5)
+    print(" Тест объема свечей:\n")
+    result = client.get_candle_volume_ratio("BTCUSDT", "linear", "15", 20)
     
-    for a in assets:
-        print(f"{a.symbol}: {a.price_change_24h:+.2f}% | Volume: ${a.volume_24h/1e6:.2f}M")
+    if result:
+        print(f"Ratio: {result['ratio']:.2f}x")
+        print(f"Current volume: ${result['current_volume']:,.2f}")
+        print(f"Avg volume: ${result['avg_volume']:,.2f}")
+    else:
+        print("❌ Ошибка")
