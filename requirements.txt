@@ -1,0 +1,11 @@
+# HTTP запросы
+requests==2.31.0
+
+# Telegram бот (версия для Python 3.12+)
+python-telegram-bot==21.6
+
+# Работа с .env
+python-dotenv==1.0.0
+
+# Логирование
+colorlog==6.8.0
