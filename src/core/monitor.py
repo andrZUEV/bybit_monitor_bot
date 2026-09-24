@@ -2,26 +2,23 @@
 Модуль мониторинга цен и объёмов
 """
 
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-
-import time
-import logging
+import sys, os, time, logging
 from typing import Callable, Optional, Dict, Any
 from dataclasses import dataclass, field
 from enum import Enum
 
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+
 from src.api.bybit_client import BybitClient, TickerData
 from src.core.alerts import AlertsManager, Asset, AlertRule
+from src.core.cooldown import CooldownManager
+from src.core.analyzer import analyze_candle_confirmation, format_confirmation_message
 
 logger = logging.getLogger(__name__)
-
 
 class CrossDirection(Enum):
     UP = "up"
     DOWN = "down"
-
 
 @dataclass
 class AlertEvent:
@@ -32,14 +29,12 @@ class AlertEvent:
     message: str
     extra: Dict[str, Any] = field(default_factory=dict)
 
-
 @dataclass
 class AssetState:
     prev_price: Optional[float] = None
     prev_volume: Optional[float] = None
     last_volume_alert_time: float = 0
     triggered_alerts: Dict[str, bool] = field(default_factory=dict)
-
 
 class Monitor:
     def __init__(
@@ -52,7 +47,8 @@ class Monitor:
         price_reset_threshold: float = 0.005,
         candle_interval: str = "15",
         candle_periods: int = 20,
-        candle_volume_multiplier: float = 3.0
+        candle_volume_multiplier: float = 3.0,
+        alert_cooldown_minutes: int = 25  # <-- НОВОЕ
     ):
         self.alerts_manager = alerts_manager
         self.on_alert = on_alert_callback
@@ -60,13 +56,12 @@ class Monitor:
         self.volume_threshold = volume_threshold
         self.volume_cooldown = volume_cooldown
         self.price_reset_threshold = price_reset_threshold
-        
-        # Новые параметры для анализа свечей
         self.candle_interval = candle_interval
         self.candle_periods = candle_periods
         self.candle_volume_multiplier = candle_volume_multiplier
         
         self.client = BybitClient()
+        self.cooldown_manager = CooldownManager(cooldown_minutes=alert_cooldown_minutes) # <-- НОВОЕ
         self.states: Dict[str, AssetState] = {}
         self._running = False
         self._poll_count = 0
@@ -87,13 +82,10 @@ class Monitor:
             crossed_down = (prev > target and curr <= target)
             
             if not (crossed_up or crossed_down):
-                if direction == 'up' and curr < target:
-                    state.triggered_alerts[alert_key] = False
-                elif direction == 'down' and curr > target:
-                    state.triggered_alerts[alert_key] = False
+                if direction == 'up' and curr < target: state.triggered_alerts[alert_key] = False
+                elif direction == 'down' and curr > target: state.triggered_alerts[alert_key] = False
                 elif direction == 'any':
-                    distance = abs(curr - target) / target if target > 0 else 0
-                    if distance > self.price_reset_threshold:
+                    if (abs(curr - target) / target if target > 0 else 0) > self.price_reset_threshold:
                         state.triggered_alerts[alert_key] = False
                 continue
             
@@ -104,109 +96,50 @@ class Monitor:
             if should_alert and not is_triggered:
                 cross_text = "🟢 СНИЗУ ВВЕРХ" if cross_type == CrossDirection.UP else "🔴 СВЕРХУ ВНИЗ"
                 
-                # Получаем свечи для анализа
-                klines = self.client.get_klines(
-                    asset.symbol, asset.category,
-                    self.candle_interval, 30
-                )
-                
-                # Получаем отношение объема
-                vol_data = self.client.get_candle_volume_ratio(
-                    asset.symbol, asset.category,
-                    self.candle_interval, self.candle_periods
-                )
+                klines = self.client.get_klines(asset.symbol, asset.category, self.candle_interval, 30)
+                vol_data = self.client.get_candle_volume_ratio(asset.symbol, asset.category, self.candle_interval, self.candle_periods)
                 volume_ratio = vol_data["ratio"] if vol_data else 0.0
-                
-                # Вызываем анализатор
-                from src.core.analyzer import analyze_candle_confirmation, format_confirmation_message
                 
                 if klines:
                     analysis = analyze_candle_confirmation(
-                        klines=klines,
-                        level=target,
-                        direction=direction,
-                        volume_ratio=volume_ratio
+                        klines=klines, level=target, direction=direction, 
+                        volume_ratio=volume_ratio, interval_minutes=int(self.candle_interval)
                     )
-                    confirmation_block = format_confirmation_message(analysis)
-                else:
-                    confirmation_block = "\n⚠️ Не удалось получить данные свечей для анализа"
-                
-                note_text = f"\n📝 <b>Сетап:</b> <code>{rule.setup_note}</code>" if rule.setup_note else ""
-                
-                message = (
-                    f"🚨 <b>Price Alert: {asset.symbol}</b>\n"
-                    f"Уровень: <code>{target:,.2f}</code>\n"
-                    f"Направление: {cross_text}\n"
-                    f" Цена: <code>{curr:,.2f}</code>"
-                    f"{confirmation_block}"
-                    f"{note_text}"
-                )
-                
-                event = AlertEvent(
-                    event_type='price_cross',
-                    symbol=asset.symbol,
-                    category=asset.category,
-                    current_price=curr,
-                    message=message,
-                    extra={
-                        'target': target, 
-                        'direction': direction, 
-                        'volume_ratio': volume_ratio,
-                        'analysis': analysis if klines else None
-                    }
-                )
-                
-                self.on_alert(event)
-                state.triggered_alerts[alert_key] = True
-                logger.info(f"🔔 Алерт сработал: {asset.symbol} @ {target} {direction}")
-    
-    def _check_candle_volume(self, asset: Asset, ticker: TickerData, state: AssetState):
-        """Проверяет аномальный объем текущей свечи"""
-        vol_data = self.client.get_candle_volume_ratio(
-            asset.symbol, asset.category,
-            self.candle_interval, self.candle_periods
-        )
-        
-        if not vol_data:
-            return
-        
-        ratio = vol_data["ratio"]
-        
-        # Проверяем, превышает ли объем порог
-        if ratio < self.candle_volume_multiplier:
-            return
-        
-        # Кулдаун
-        now = time.time()
-        if now - state.last_volume_alert_time < self.volume_cooldown:
-            return
-        
-        message = (
-            f"⚡️ <b>Candle Volume Alert: {asset.symbol}</b>\n"
-            f"Объём свечи: <b>{ratio:.1f}x</b> от среднего\n"
-            f"Таймфрейм: {self.candle_interval}m\n"
-            f"💰 Цена: <code>{ticker.price:,.2f}</code>"
-        )
-        
-        event = AlertEvent(
-            event_type='candle_volume',
-            symbol=asset.symbol,
-            category=asset.category,
-            current_price=ticker.price,
-            message=message,
-            extra={'volume_ratio': ratio, 'interval': self.candle_interval}
-        )
-        
-        self.on_alert(event)
-        state.last_volume_alert_time = now
-        logger.info(f"⚡️ Candle volume alert: {asset.symbol} {ratio:.1f}x")
+                    
+                    # === ГЛАВНАЯ ПРОВЕРКА: SCORE И КУЛДАУН ===
+                    score = analysis.get('strength_score', 0)
+                    
+                    if score >= 3 and self.cooldown_manager.can_send(asset.symbol, target, direction):
+                        confirmation_block = format_confirmation_message(analysis)
+                        note_text = f"\n📝 <b>Сетап:</b> <code>{rule.setup_note}</code>" if rule.setup_note else ""
+                        
+                        message = (
+                            f"🚨 <b>Price Alert: {asset.symbol}</b>\n"
+                            f"Уровень: <code>{target:,.2f}</code>\n"
+                            f"Направление: {cross_text}\n"
+                            f"💰 Цена: <code>{curr:,.2f}</code>"
+                            f"{confirmation_block}"
+                            f"{note_text}"
+                        )
+                        
+                        event = AlertEvent(
+                            event_type='price_cross', symbol=asset.symbol, category=asset.category,
+                            current_price=curr, message=message,
+                            extra={'target': target, 'direction': direction, 'analysis': analysis}
+                        )
+                        
+                        self.on_alert(event)
+                        self.cooldown_manager.mark_sent(asset.symbol, target, direction)
+                        state.triggered_alerts[alert_key] = True
+                        logger.info(f"🔔 Алерт ОТПРАВЛЕН: {asset.symbol} @ {target} (Score: {score})")
+                    else:
+                        reason = "score < 3" if score < 3 else "active cooldown"
+                        logger.debug(f"⏭️ Алерт ПРОПУЩЕН: {asset.symbol} @ {target} ({reason}, Score: {score})")
     
     def _poll_once(self):
         self.alerts_manager.load()
         assets = self.alerts_manager.get_all_alerts()
-        
-        if not assets:
-            return
+        if not assets: return
         
         self._poll_count += 1
         if self._poll_count % 15 == 0:
@@ -214,87 +147,29 @@ class Monitor:
         
         for asset in assets:
             symbol = asset.symbol
-            
-            if symbol not in self.states:
-                self.states[symbol] = AssetState()
-            
-            state = self.states[symbol]
+            if symbol not in self.states: self.states[symbol] = AssetState()
             
             ticker = self.client.get_ticker(symbol, asset.category)
-            if not ticker:
-                continue
+            if not ticker: continue
             
-            self._check_price_cross(asset, ticker, state)
-            self._check_candle_volume(asset, ticker, state)
-            
+            self._check_price_cross(asset, ticker, self.states[symbol])
+            state = self.states[symbol]
             state.prev_price = ticker.price
             state.prev_volume = ticker.volume_24h
     
     def start(self):
         self._running = True
-        logger.info(
-            f"🚀 Мониторинг запущен. "
-            f"Интервал: {self.poll_interval}s, "
-            f"Свечи: {self.candle_interval}m, "
-            f"Порог объема: {self.candle_volume_multiplier}x"
-        )
-        
+        logger.info(f"🚀 Мониторинг запущен. Интервал: {self.poll_interval}s, Кулдаун: {self.cooldown_manager.cooldown_seconds//60}м")
         try:
             while self._running:
-                try:
-                    self._poll_once()
-                except Exception as e:
-                    logger.error(f"Ошибка в цикле опроса: {e}", exc_info=True)
-                
+                try: self._poll_once()
+                except Exception as e: logger.error(f"Ошибка в цикле: {e}", exc_info=True)
                 time.sleep(self.poll_interval)
-        
         except KeyboardInterrupt:
-            logger.info(" Мониторинг остановлен пользователем")
+            logger.info("🛑 Мониторинг остановлен")
         finally:
             self._running = False
     
     def stop(self):
         self._running = False
         logger.info("Мониторинг останавливается...")
-
-
-if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    
-    print("🧪 Тестирование Monitor\n")
-    
-    test_file = "data/test_monitor_alerts.json"
-    manager = AlertsManager(test_file)
-    manager.clear_all()
-    manager.add_alert("BTCUSDT", 85000, "up")
-    
-    def on_alert(event: AlertEvent):
-        print(f"\n🔔 ПОЛУЧЕН АЛЕРТ:\n{event.message}\n")
-    
-    monitor = Monitor(
-        alerts_manager=manager,
-        on_alert_callback=on_alert,
-        poll_interval=3.0,
-        candle_interval="15",
-        candle_periods=20,
-        candle_volume_multiplier=3.0
-    )
-    
-    print("📡 Запускаем мониторинг на 15 секунд...\n")
-    
-    import threading
-    thread = threading.Thread(target=monitor.start, daemon=True)
-    thread.start()
-    
-    time.sleep(15)
-    monitor.stop()
-    thread.join(timeout=2)
-    
-    manager.clear_all()
-    from pathlib import Path
-    Path(test_file).unlink(missing_ok=True)
-    
-    print("🎉 Тест завершён!")

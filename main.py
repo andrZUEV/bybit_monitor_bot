@@ -94,7 +94,8 @@ def main():
         price_reset_threshold=0.005,
         candle_interval=Config.CANDLE_INTERVAL,
         candle_periods=Config.CANDLE_PERIODS,
-        candle_volume_multiplier=Config.CANDLE_VOLUME_MULTIPLIER
+        candle_volume_multiplier=Config.CANDLE_VOLUME_MULTIPLIER,
+        alert_cooldown_minutes=Config.ALERT_COOLDOWN_MINUTES
     )
     logger.info("✅ Монитор инициализирован")
 
