@@ -2,23 +2,30 @@
 Модуль мониторинга цен и объёмов
 """
 
-import sys, os, time, logging
+import sys
+import os
+import time
+import logging
 from typing import Callable, Optional, Dict, Any
 from dataclasses import dataclass, field
 from enum import Enum
 
+# Добавляем корень проекта в путь
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from src.api.bybit_client import BybitClient, TickerData
 from src.core.alerts import AlertsManager, Asset, AlertRule
 from src.core.cooldown import CooldownManager
 from src.core.analyzer import analyze_candle_confirmation, format_confirmation_message
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup  # <-- ДОБАВЛЕНО для кнопок
 
 logger = logging.getLogger(__name__)
+
 
 class CrossDirection(Enum):
     UP = "up"
     DOWN = "down"
+
 
 @dataclass
 class AlertEvent:
@@ -28,6 +35,8 @@ class AlertEvent:
     current_price: float
     message: str
     extra: Dict[str, Any] = field(default_factory=dict)
+    reply_markup: Any = None  # <-- ДОБАВЛЕНО для поддержки клавиатур
+
 
 @dataclass
 class AssetState:
@@ -35,6 +44,7 @@ class AssetState:
     prev_volume: Optional[float] = None
     last_volume_alert_time: float = 0
     triggered_alerts: Dict[str, bool] = field(default_factory=dict)
+
 
 class Monitor:
     def __init__(
@@ -48,7 +58,7 @@ class Monitor:
         candle_interval: str = "15",
         candle_periods: int = 20,
         candle_volume_multiplier: float = 3.0,
-        alert_cooldown_minutes: int = 25  # <-- НОВОЕ
+        alert_cooldown_minutes: int = 25
     ):
         self.alerts_manager = alerts_manager
         self.on_alert = on_alert_callback
@@ -61,7 +71,7 @@ class Monitor:
         self.candle_volume_multiplier = candle_volume_multiplier
         
         self.client = BybitClient()
-        self.cooldown_manager = CooldownManager(cooldown_minutes=alert_cooldown_minutes) # <-- НОВОЕ
+        self.cooldown_manager = CooldownManager(cooldown_minutes=alert_cooldown_minutes)
         self.states: Dict[str, AssetState] = {}
         self._running = False
         self._poll_count = 0
@@ -82,8 +92,10 @@ class Monitor:
             crossed_down = (prev > target and curr <= target)
             
             if not (crossed_up or crossed_down):
-                if direction == 'up' and curr < target: state.triggered_alerts[alert_key] = False
-                elif direction == 'down' and curr > target: state.triggered_alerts[alert_key] = False
+                if direction == 'up' and curr < target:
+                    state.triggered_alerts[alert_key] = False
+                elif direction == 'down' and curr > target:
+                    state.triggered_alerts[alert_key] = False
                 elif direction == 'any':
                     if (abs(curr - target) / target if target > 0 else 0) > self.price_reset_threshold:
                         state.triggered_alerts[alert_key] = False
@@ -102,8 +114,11 @@ class Monitor:
                 
                 if klines:
                     analysis = analyze_candle_confirmation(
-                        klines=klines, level=target, direction=direction, 
-                        volume_ratio=volume_ratio, interval_minutes=int(self.candle_interval)
+                        klines=klines, 
+                        level=target, 
+                        direction=direction, 
+                        volume_ratio=volume_ratio, 
+                        interval_minutes=int(self.candle_interval)
                     )
                     
                     # === ГЛАВНАЯ ПРОВЕРКА: SCORE И КУЛДАУН ===
@@ -122,10 +137,21 @@ class Monitor:
                             f"{note_text}"
                         )
                         
+                        # <-- ИСПРАВЛЕНО: Создаем клавиатуру прямо здесь
+                        alert_keyboard = InlineKeyboardMarkup([
+                            [InlineKeyboardButton(f"🗑 Удалить {asset.symbol} @ {target:,.2f}", 
+                                                  callback_data=f"del|{asset.symbol}|{target}|{direction}")],
+                            [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")]
+                        ])
+                        
                         event = AlertEvent(
-                            event_type='price_cross', symbol=asset.symbol, category=asset.category,
-                            current_price=curr, message=message,
-                            extra={'target': target, 'direction': direction, 'analysis': analysis}
+                            event_type='price_cross', 
+                            symbol=asset.symbol, 
+                            category=asset.category,
+                            current_price=curr, 
+                            message=message,
+                            extra={'target': target, 'direction': direction, 'analysis': analysis},
+                            reply_markup=alert_keyboard  # <-- ТЕПЕРЬ ПЕРЕМЕННАЯ ОПРЕДЕЛЕНА
                         )
                         
                         self.on_alert(event)
@@ -139,7 +165,8 @@ class Monitor:
     def _poll_once(self):
         self.alerts_manager.load()
         assets = self.alerts_manager.get_all_alerts()
-        if not assets: return
+        if not assets: 
+            return
         
         self._poll_count += 1
         if self._poll_count % 15 == 0:
@@ -147,10 +174,12 @@ class Monitor:
         
         for asset in assets:
             symbol = asset.symbol
-            if symbol not in self.states: self.states[symbol] = AssetState()
+            if symbol not in self.states: 
+                self.states[symbol] = AssetState()
             
             ticker = self.client.get_ticker(symbol, asset.category)
-            if not ticker: continue
+            if not ticker: 
+                continue
             
             self._check_price_cross(asset, ticker, self.states[symbol])
             state = self.states[symbol]
@@ -162,8 +191,10 @@ class Monitor:
         logger.info(f"🚀 Мониторинг запущен. Интервал: {self.poll_interval}s, Кулдаун: {self.cooldown_manager.cooldown_seconds//60}м")
         try:
             while self._running:
-                try: self._poll_once()
-                except Exception as e: logger.error(f"Ошибка в цикле: {e}", exc_info=True)
+                try: 
+                    self._poll_once()
+                except Exception as e: 
+                    logger.error(f"Ошибка в цикле: {e}", exc_info=True)
                 time.sleep(self.poll_interval)
         except KeyboardInterrupt:
             logger.info("🛑 Мониторинг остановлен")

@@ -112,9 +112,16 @@ class TelegramBot:
         self._thread.start()
         logger.info("🤖 Telegram бот запущен в фоновом потоке")
     
-    def send_alert(self, message: str) -> bool:
+    def send_alert(self, message: str, reply_markup=None) -> bool:
         """
         Отправляет алерт в Telegram (можно вызывать из любого потока)
+        
+        Args:
+            message: HTML-сообщение
+            reply_markup: Inline-клавиатура (опционально)
+            
+        Returns:
+            True если успешно
         """
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         payload = {
@@ -123,6 +130,14 @@ class TelegramBot:
             "parse_mode": "HTML",
             "disable_web_page_preview": True
         }
+        
+        # Добавляем клавиатуру, если передана
+        if reply_markup:
+            from telegram import InlineKeyboardMarkup
+            if isinstance(reply_markup, InlineKeyboardMarkup):
+                payload["reply_markup"] = reply_markup.to_dict()
+            else:
+                payload["reply_markup"] = reply_markup
         
         try:
             response = requests.post(url, data=payload, timeout=10)

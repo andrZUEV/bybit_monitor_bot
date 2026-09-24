@@ -43,15 +43,10 @@ def setup_logging():
 # ==================== ГЛАВНАЯ ЛОГИКА ====================
 
 def on_alert_callback(event: AlertEvent):
-    """
-    Callback-функция, которую вызывает Monitor при срабатывании алерта.
-    Отправляет сообщение через Telegram бота.
-    """
     logger = logging.getLogger(__name__)
     logger.info(f"🔔 Сработал алерт: {event.symbol} ({event.event_type})")
     
-    # Отправляем уведомление в Telegram
-    success = telegram_bot.send_alert(event.message)
+    success = telegram_bot.send_alert(event.message, reply_markup=event.reply_markup)
     if not success:
         logger.error("❌ Не удалось отправить алерт в Telegram")
 
@@ -108,15 +103,19 @@ def main():
     # Даём боту 1 секунду на инициализацию
     time.sleep(1)
     
-    # Отправляем приветственное сообщение в Telegram
+    # Отправляем приветственное сообщение в Telegram С КНОПКАМИ
     welcome_msg = (
         "✅ <b>Bybit Monitor Bot запущен!</b>\n\n"
-        f"📊 Отслеживается алертов: <b>{total_alerts}</b>\n"
+        f" Отслеживается алертов: <b>{total_alerts}</b>\n"
         f"⏱ Интервал опроса: <b>{Config.POLL_INTERVAL} сек</b>\n"
-        f"📈 Порог объема: <b>{Config.VOLUME_THRESHOLD}%</b>\n\n"
-        "Используйте меню для управления."
+        f"📈 Порог объема: <b>{Config.VOLUME_THRESHOLD}%</b>\n"
+        f"⏳ Кулдаун алертов: <b>{Config.ALERT_COOLDOWN_MINUTES} мин</b>\n\n"
+        "Используйте меню для управления:"
     )
-    telegram_bot.send_alert(welcome_msg)
+    
+    # Импортируем клавиатуру
+    from src.telegram.keyboards import main_menu_keyboard
+    telegram_bot.send_alert(welcome_msg, reply_markup=main_menu_keyboard())
 
     # 6. Основной цикл (блокирующий)
     try:
