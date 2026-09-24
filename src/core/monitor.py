@@ -104,17 +104,32 @@ class Monitor:
             if should_alert and not is_triggered:
                 cross_text = "🟢 СНИЗУ ВВЕРХ" if cross_type == CrossDirection.UP else "🔴 СВЕРХУ ВНИЗ"
                 
-                # <-- НОВОЕ: Получаем отношение объема свечи
+                # Получаем свечи для анализа
+                klines = self.client.get_klines(
+                    asset.symbol, asset.category,
+                    self.candle_interval, 30
+                )
+                
+                # Получаем отношение объема
                 vol_data = self.client.get_candle_volume_ratio(
                     asset.symbol, asset.category,
                     self.candle_interval, self.candle_periods
                 )
+                volume_ratio = vol_data["ratio"] if vol_data else 0.0
                 
-                if vol_data:
-                    ratio = vol_data["ratio"]
-                    vol_text = f"📊 Объём свечи: <b>{ratio:.1f}x</b> от среднего ({self.candle_interval}m)"
+                # Вызываем анализатор
+                from src.core.analyzer import analyze_candle_confirmation, format_confirmation_message
+                
+                if klines:
+                    analysis = analyze_candle_confirmation(
+                        klines=klines,
+                        level=target,
+                        direction=direction,
+                        volume_ratio=volume_ratio
+                    )
+                    confirmation_block = format_confirmation_message(analysis)
                 else:
-                    vol_text = "📊 Объём свечи: нет данных"
+                    confirmation_block = "\n⚠️ Не удалось получить данные свечей для анализа"
                 
                 note_text = f"\n📝 <b>Сетап:</b> <code>{rule.setup_note}</code>" if rule.setup_note else ""
                 
@@ -122,8 +137,8 @@ class Monitor:
                     f"🚨 <b>Price Alert: {asset.symbol}</b>\n"
                     f"Уровень: <code>{target:,.2f}</code>\n"
                     f"Направление: {cross_text}\n"
-                    f"💰 Цена: <code>{curr:,.2f}</code>\n"
-                    f"{vol_text}"
+                    f" Цена: <code>{curr:,.2f}</code>"
+                    f"{confirmation_block}"
                     f"{note_text}"
                 )
                 
@@ -133,7 +148,12 @@ class Monitor:
                     category=asset.category,
                     current_price=curr,
                     message=message,
-                    extra={'target': target, 'direction': direction, 'volume_ratio': vol_data['ratio'] if vol_data else 0}
+                    extra={
+                        'target': target, 
+                        'direction': direction, 
+                        'volume_ratio': volume_ratio,
+                        'analysis': analysis if klines else None
+                    }
                 )
                 
                 self.on_alert(event)

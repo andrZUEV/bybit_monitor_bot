@@ -236,6 +236,39 @@ class BybitClient:
         except Exception:
             return False
 
+    def get_klines(
+        self,
+        symbol: str,
+        category: str = "linear",
+        interval: str = "15",
+        limit: int = 30
+    ) -> Optional[List[List]]:
+        """
+        Получает свечи (klines) с Bybit API
+        
+        Args:
+            symbol: Тикер
+            category: Категория (linear/spot)
+            interval: Таймфрейм в минутах
+            limit: Количество свечей (макс 200)
+        
+        Returns:
+            Список свечей от новых к старым или None при ошибке
+            Формат свечи: [startTime, open, high, low, close, volume, turnover]
+        """
+        try:
+            params = {
+                "category": category,
+                "symbol": symbol.upper(),
+                "interval": interval,
+                "limit": limit
+            }
+            data = self._make_request("/v5/market/kline", params)
+            return data.get("result", {}).get("list", [])
+        except Exception as e:
+            logger.error(f"Ошибка получения свечей {symbol}: {e}")
+            return None
+
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
