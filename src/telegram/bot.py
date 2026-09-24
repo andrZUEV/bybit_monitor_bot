@@ -1,6 +1,7 @@
 """
 Telegram бот — запуск и отправка уведомлений
 """
+import json
 
 import sys
 import os
@@ -115,13 +116,6 @@ class TelegramBot:
     def send_alert(self, message: str, reply_markup=None) -> bool:
         """
         Отправляет алерт в Telegram (можно вызывать из любого потока)
-        
-        Args:
-            message: HTML-сообщение
-            reply_markup: Inline-клавиатура (опционально)
-            
-        Returns:
-            True если успешно
         """
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         payload = {
@@ -131,13 +125,13 @@ class TelegramBot:
             "disable_web_page_preview": True
         }
         
-        # Добавляем клавиатуру, если передана
+        # ИСПРАВЛЕНИЕ: Telegram требует JSON-строку для клавиатуры!
         if reply_markup:
             from telegram import InlineKeyboardMarkup
             if isinstance(reply_markup, InlineKeyboardMarkup):
-                payload["reply_markup"] = reply_markup.to_dict()
+                payload["reply_markup"] = json.dumps(reply_markup.to_dict())
             else:
-                payload["reply_markup"] = reply_markup
+                payload["reply_markup"] = json.dumps(reply_markup)
         
         try:
             response = requests.post(url, data=payload, timeout=10)

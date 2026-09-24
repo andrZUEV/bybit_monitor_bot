@@ -15,6 +15,7 @@ from src.utils.config import Config
 from src.core.alerts import AlertsManager
 from src.telegram.bot import TelegramBot
 from src.core.monitor import Monitor, AlertEvent
+from src.telegram.keyboards import main_menu_keyboard
 
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
 
@@ -114,7 +115,7 @@ def main():
     )
     
     # Импортируем клавиатуру
-    from src.telegram.keyboards import main_menu_keyboard
+
     telegram_bot.send_alert(welcome_msg, reply_markup=main_menu_keyboard())
 
     # 6. Основной цикл (блокирующий)
