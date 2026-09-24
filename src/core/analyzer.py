@@ -129,30 +129,79 @@ def analyze_candle_confirmation(
     close_position = get_close_position(last_candle)
     wick_beyond = check_wick_beyond_level(last_candle, level, direction)
     
-    # === ПОДСЧЁТ SCORE ===
+    # === ПОДСЧЁТ SCORE С УЧЁТОМ ОБЪЁМА ===
     score = 0
-    if direction == 'up' and pattern in ['bullish_pinbar', 'bullish_engulfing']: score += 2
-    elif direction == 'down' and pattern in ['bearish_pinbar', 'bearish_engulfing']: score += 2
+    volume_penalty = 0  # Штраф за низкий объём
     
-    if direction == 'up' and rsi_zone == 'oversold': score += 1
-    elif direction == 'down' and rsi_zone == 'overbought': score += 1
+    # +2: Паттерн совпадает с направлением
+    if direction == 'up' and pattern in ['bullish_pinbar', 'bullish_engulfing']:
+        score += 2
+    elif direction == 'down' and pattern in ['bearish_pinbar', 'bearish_engulfing']:
+        score += 2
     
-    if direction == 'up' and close_position == 'upper_third': score += 1
-    elif direction == 'down' and close_position == 'lower_third': score += 1
+    # +1: RSI в нужной зоне
+    if direction == 'up' and rsi_zone == 'oversold':
+        score += 1
+    elif direction == 'down' and rsi_zone == 'overbought':
+        score += 1
     
-    if wick_beyond: score += 1
-    if volume_ratio >= 2.5: score += 1
+    # +1: Закрытие в нужной трети
+    if direction == 'up' and close_position == 'upper_third':
+        score += 1
+    elif direction == 'down' and close_position == 'lower_third':
+        score += 1
     
-    if score >= 4: verdict, verdict_text = 'strong', '🔥 Сильные признаки разворота'
-    elif score >= 3: verdict, verdict_text = 'weak', '⚠️ Есть признаки силы'
-    else: verdict, verdict_text = 'none', '❌ Слабые сигналы'
+    # +1: Тень за уровнем (сбор стопов)
+    if wick_beyond:
+        score += 1
+    
+    # === НОВАЯ ЛОГИКА ОБЪЁМА ===
+    if volume_ratio >= 2.5:
+        score += 1  # Сильный объём — бонус
+    elif volume_ratio >= 1.5:
+        pass  # Нормальный объём — без штрафа
+    elif volume_ratio >= 1.0:
+        volume_penalty = 1  # Слабый объём — штраф 1 балл
+    else:
+        volume_penalty = 2  # Очень слабый объём (<1.0x) — штраф 2 балла
+    
+    # Применяем штраф
+    score -= volume_penalty
+    
+    # Обнуляем, если score стал отрицательным
+    if score < 0:
+        score = 0
+    
+    # === ВЕРДИКТ ===
+    if score >= 4:
+        verdict = 'strong'
+        verdict_text = '🔥 Сильные признаки разворота — высокий шанс входа'
+    elif score >= 3:
+        verdict = 'weak'
+        verdict_text = '⚠️ Есть признаки силы — можно рассматривать вход'
+    else:
+        verdict = 'none'
+        verdict_text = '❌ Слабые сигналы — лучше пропустить'
+    
+    # Добавляем информацию о штрафе в результат
+    volume_status = {
+        'ratio': volume_ratio,
+        'penalty': volume_penalty,
+        'status': 'strong' if volume_ratio >= 2.5 else 'normal' if volume_ratio >= 1.5 else 'weak' if volume_ratio >= 1.0 else 'very_weak'
+    }
     
     return {
-        'pattern': pattern, 'pattern_name_ru': pattern_names.get(pattern, 'Не обнаружен'),
-        'rsi': round(rsi, 1) if rsi else None, 'rsi_zone': rsi_zone,
-        'close_position': close_position, 'wick_beyond_level': wick_beyond,
-        'volume_ratio': volume_ratio, 'strength_score': score,
-        'verdict': verdict, 'verdict_text': f"{verdict_text} ({score}/5)"
+        'pattern': pattern,
+        'pattern_name_ru': pattern_names.get(pattern, 'Не обнаружен'),
+        'rsi': round(rsi, 1) if rsi else None,
+        'rsi_zone': rsi_zone,
+        'close_position': close_position,
+        'wick_beyond_level': wick_beyond,
+        'volume_ratio': volume_ratio,
+        'volume_status': volume_status,  # <-- НОВОЕ
+        'strength_score': score,
+        'verdict': verdict,
+        'verdict_text': f"{verdict_text} ({score}/5)"
     }
 
 def format_confirmation_message(analysis: Dict[str, Any]) -> str:
@@ -164,15 +213,37 @@ def format_confirmation_message(analysis: Dict[str, Any]) -> str:
         lines.append(f"• RSI(14): <b>{analysis['rsi']}</b> ({rsi_ru[analysis['rsi_zone']]})")
     else:
         lines.append("• RSI(14): нет данных")
-        
-    if analysis['volume_ratio'] > 0:
-        lines.append(f"• Объём: <b>{analysis['volume_ratio']:.1f}x</b> от среднего")
-        
+    
+    # НОВАЯ ЛОГИКА ОТОБРАЖЕНИЯ ОБЪЁМА
+    vol = analysis['volume_ratio']
+    vol_status = analysis.get('volume_status', {})
+    penalty = vol_status.get('penalty', 0)
+    
+    if vol >= 2.5:
+        vol_emoji = "🚀"
+        vol_text = f"<b>{vol:.1f}x</b> (сильный)"
+    elif vol >= 1.5:
+        vol_emoji = "✅"
+        vol_text = f"<b>{vol:.1f}x</b> (нормальный)"
+    elif vol >= 1.0:
+        vol_emoji = "⚠️"
+        vol_text = f"<b>{vol:.1f}x</b> (слабый, -1 балл)"
+    else:
+        vol_emoji = "❌"
+        vol_text = f"<b>{vol:.1f}x</b> (очень слабый, -2 балла)"
+    
+    lines.append(f"• Объём: {vol_emoji} {vol_text} от среднего")
+    
     close_ru = {'upper_third': 'верхняя треть', 'lower_third': 'нижняя треть', 'middle': 'середина'}
     lines.append(f"• Закрытие: {close_ru.get(analysis['close_position'], 'неизвестно')}")
     
     wick_text = "✅ да" if analysis['wick_beyond_level'] else "❌ нет"
     lines.append(f"• Тень за уровнем: {wick_text}")
+    
+    # Показываем штраф если был
+    if penalty > 0:
+        lines.append(f"\n️ <b>Штраф за низкий объём: -{penalty} балл(а)</b>")
+    
     lines.append(f"\n{analysis['verdict_text']}")
     
     return "\n".join(lines)
