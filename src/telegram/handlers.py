@@ -66,6 +66,33 @@ class TelegramHandlers:
         text = update.message.text.strip()
         state = self.user_state.get(chat_id, {})
         
+        # === ОБРАБОТКА REPLY-КНОПОК (в самом начале!) ===
+        if text == " Добавить алерт":
+            self.user_state[chat_id] = {'step': 'waiting_symbol'}
+            await update.message.reply_text(
+                "➕ <b>Добавление алерта</b>\n\nВведите тикер (например, <code>BTCUSDT</code>):",
+                parse_mode='HTML',
+                reply_markup=keyboards.cancel_keyboard()
+            )
+            return
+            
+        elif text == "🔍 Скринер":
+            await self._run_screener_simple(update, chat_id)
+            return
+            
+        elif text == "💰 Текущие цены":
+            await self._handle_current_prices(update)
+            return
+            
+        elif text == "📋 Мои алерты":
+            await self._show_list(update, context)
+            return
+            
+        elif text == "ℹ️ Помощь":
+            await self._show_help(update)
+            return
+        # === КОНЕЦ ОБРАБОТКИ REPLY-КНОПОК ===
+
         if state.get('step') == 'waiting_symbol':
             symbol = text.upper().replace(' ', '')
             if len(symbol) < 4 or not symbol.isalpha():

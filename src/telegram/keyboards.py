@@ -68,7 +68,8 @@ def screener_add_alert_keyboard(symbol: str) -> InlineKeyboardMarkup:
 def reply_keyboard() -> ReplyKeyboardMarkup:
     """Постоянная Reply-клавиатура внизу экрана"""
     keyboard = [
-        [KeyboardButton(" Скринер"), KeyboardButton("💰 Цены")],
-        [KeyboardButton("📋 Алерты"), KeyboardButton("➕ Добавить")]
+        [KeyboardButton("➕ Добавить алерт"), KeyboardButton("🔍 Скринер")],
+        [KeyboardButton("💰 Текущие цены"), KeyboardButton("📋 Мои алерты")],
+        [KeyboardButton("ℹ️ Помощь")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
