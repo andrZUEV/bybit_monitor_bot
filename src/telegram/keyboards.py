@@ -70,6 +70,7 @@ def reply_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
         [KeyboardButton("➕ Добавить алерт"), KeyboardButton("🔍 Скринер")],
         [KeyboardButton("💰 Текущие цены"), KeyboardButton("📋 Мои алерты")],
-        [KeyboardButton("ℹ️ Помощь")]
+        [KeyboardButton("ℹ️ Помощь")],
+        [KeyboardButton("кнопка")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
