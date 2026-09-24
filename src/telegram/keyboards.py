@@ -4,6 +4,8 @@ Inline-клавиатуры для Telegram бота
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from telegram import ReplyKeyboardMarkup, KeyboardButton
+
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     """Главное меню"""
@@ -62,3 +64,11 @@ def screener_add_alert_keyboard(symbol: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
     ]
     return InlineKeyboardMarkup(keyboard)
+
+def reply_keyboard() -> ReplyKeyboardMarkup:
+    """Постоянная Reply-клавиатура внизу экрана"""
+    keyboard = [
+        [KeyboardButton(" Скринер"), KeyboardButton("💰 Цены")],
+        [KeyboardButton("📋 Алерты"), KeyboardButton("➕ Добавить")]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)

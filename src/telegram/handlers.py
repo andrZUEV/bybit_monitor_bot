@@ -12,6 +12,7 @@ from telegram.ext import ContextTypes
 from src.core.alerts import AlertsManager
 from src.api.bybit_client import BybitClient, ScreenerAsset
 from src.telegram import keyboards
+from src.telegram.keyboards import main_menu_keyboard, reply_keyboard  
 
 logger = logging.getLogger(__name__)
 
@@ -41,13 +42,13 @@ class TelegramHandlers:
             "🔍 <b>Скринер:</b> ищите монеты с сильным движением!\n"
             "⚡ <b>Алерты:</b> получайте уведомления о пробоях.",
             parse_mode='HTML',
-            reply_markup=keyboards.main_menu_keyboard()
+            reply_markup=reply_keyboard()
         )
 
     async def menu_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update): return
         self._reset_state(update.effective_chat.id)
-        await update.message.reply_text("🏠 <b>Главное меню</b>", parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
+        await update.message.reply_text("🏠 <b>Главное меню</b>", parse_mode='HTML', reply_markup=reply_keyboard())
 
     async def list_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update): return
