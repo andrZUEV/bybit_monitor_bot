@@ -16,6 +16,11 @@ from src.core.alerts import AlertsManager
 from src.telegram.bot import TelegramBot
 from src.core.monitor import Monitor, AlertEvent
 from src.telegram.keyboards import main_menu_keyboard
+from src.utils.data_exporter import DataExporter
+
+    exporter = DataExporter(bybit_client)
+    exporter.cleanup_old_files(max_age_hours=1)
+    logger.info("🗑 Старые файлы экспорта удалены")
 
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
 
