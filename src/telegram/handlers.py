@@ -40,13 +40,18 @@ class TelegramHandlers:
     async def start_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update): return
         self._reset_state(update.effective_chat.id)
+        total_alerts = sum(len(a.alerts) for a in self.alerts_manager.get_all_alerts())
         await update.message.reply_text(
-            "👋 <b>Bybit Monitor Bot</b>\n\n"
+            " <b>Bybit Monitor Bot</b>\n\n"
             "🔍 <b>Скринер:</b> ищите монеты с сильным движением!\n"
-            "⚡ <b>Алерты:</b> получайте уведомления о пробоях.\n"
-            "📊 <b>Экспорт:</b> выгружайте данные по любым тикерам.",
+            "⚡ <b>Алерты:</b> получайте уведомления о пробоях.\n\n"
+            f"📊 <b>Статус:</b>\n"
+            f"• Отслеживается алертов: <b>{total_alerts}</b>\n"
+            f"• Интервал опроса: <b>4 сек</b>\n"
+            f"• Кулдаун: <b>25 мин</b>\n\n"
+            "Выберите действие:",
             parse_mode='HTML',
-            reply_markup=keyboards.main_menu_keyboard()
+            reply_markup=keyboards.main_menu_keyboard()  # <-- Inline, НЕ reply
         )
 
     async def menu_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
