@@ -7,10 +7,10 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 def main_menu_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton("➕ Добавить алерт", callback_data="menu_add")],
-        [InlineKeyboardButton("🔍 Скринер", callback_data="menu_screener")],
-        [InlineKeyboardButton("💰 Текущие цены", callback_data="menu_prices")],
+        [InlineKeyboardButton(" Скринер", callback_data="menu_screener")],
+        [InlineKeyboardButton(" Текущие цены", callback_data="menu_prices")],
         [InlineKeyboardButton("📋 Мои алерты", callback_data="menu_list")],
-        [InlineKeyboardButton("📊 Выгрузить данные", callback_data="menu_export")],
+        [InlineKeyboardButton("📊 Выгрузить данные", callback_data="menu_export")],  # <-- теперь ведёт в подменю
         [InlineKeyboardButton("ℹ️ Помощь", callback_data="menu_help")],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -53,6 +53,15 @@ def screener_add_alert_keyboard(symbol: str) -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton(f"➕ Алерт на {symbol}", callback_data=f"scr_add_{symbol}")],
         [InlineKeyboardButton("🔄 Обновить", callback_data="scr_refresh")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+def export_tracked_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура для выбора типа выгрузки"""
+    keyboard = [
+        [InlineKeyboardButton("📋 Отслеживаемые алерты", callback_data="export_tracked")],
+        [InlineKeyboardButton("✏️ Ввести тикеры вручную", callback_data="export_manual")],
         [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
     ]
     return InlineKeyboardMarkup(keyboard)

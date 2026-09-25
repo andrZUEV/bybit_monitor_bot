@@ -254,6 +254,58 @@ class TelegramHandlers:
                 parse_mode='HTML',
                 reply_markup=keyboards.cancel_keyboard()
             )
+                    elif data == "menu_export":
+            # Показываем подменю выбора типа выгрузки
+            await query.edit_message_text(
+                "📊 <b>Выгрузка данных</b>\n\n"
+                "Выберите способ выгрузки:",
+                parse_mode='HTML',
+                reply_markup=keyboards.export_tracked_keyboard()
+            )
+            
+        elif data == "export_tracked":
+            # Выгрузка по всем отслеживаемым алертам
+            assets = self.alerts_manager.get_all_alerts()
+            if not assets:
+                await query.edit_message_text(
+                    " Нет отслеживаемых активов. Добавьте алерты сначала.",
+                    reply_markup=keyboards.main_menu_keyboard()
+                )
+                return
+            
+            symbols = list(set(a.symbol for a in assets))
+            await query.edit_message_text(f"⏳ Выгружаю данные для {len(symbols)} активов: {', '.join(symbols)}...")
+            
+            filepath = self.data_exporter.export_multiple_symbols(symbols, "linear")
+            
+            if filepath:
+                with open(filepath, 'rb') as f:
+                    await update.callback_query.message.reply_document(
+                        document=InputFile(f, filename=filepath.name),
+                        caption=f"✅ Данные выгружены\nАктивов: {len(symbols)}\n" + 
+                                f"📋 {', '.join(symbols)}"
+                    )
+                filepath.unlink()
+                await query.edit_message_text(
+                    "✅ Файл отправлен!",
+                    reply_markup=keyboards.main_menu_keyboard()
+                )
+            else:
+                await query.edit_message_text(
+                    "❌ Ошибка экспорта",
+                    reply_markup=keyboards.main_menu_keyboard()
+                )
+                
+        elif data == "export_manual":
+            # Ручной ввод тикеров
+            self.user_state[chat_id] = {'step': 'waiting_for_export_tickers'}
+            await query.edit_message_text(
+                "✏️ <b>Ручная выгрузка</b>\n\n"
+                "Введите тикеры через пробел:\n"
+                "Например: <code>BTCUSDT ETHUSDT SOLUSDT</code>",
+                parse_mode='HTML',
+                reply_markup=keyboards.cancel_keyboard()
+            )
             
         elif data == "menu_screener":
             await self._run_screener_simple(update, chat_id)
