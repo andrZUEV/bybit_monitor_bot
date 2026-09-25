@@ -15,7 +15,6 @@ from telegram.ext import ContextTypes
 from src.core.alerts import AlertsManager
 from src.api.bybit_client import BybitClient
 from src.telegram import keyboards
-from src.utils.data_exporter import DataExporter  # <-- ДОБАВИТЬ
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +42,7 @@ class TelegramHandlers:
         self._reset_state(update.effective_chat.id)
         total_alerts = sum(len(a.alerts) for a in self.alerts_manager.get_all_alerts())
         await update.message.reply_text(
-            " <b>Bybit Monitor Bot</b>\n\n"
+            "🤖 <b>Bybit Monitor Bot</b>\n\n"
             "🔍 <b>Скринер:</b> ищите монеты с сильным движением!\n"
             "⚡ <b>Алерты:</b> получайте уведомления о пробоях.\n\n"
             f"📊 <b>Статус:</b>\n"
@@ -52,7 +51,7 @@ class TelegramHandlers:
             f"• Кулдаун: <b>25 мин</b>\n\n"
             "Выберите действие:",
             parse_mode='HTML',
-            reply_markup=keyboards.main_menu_keyboard()  # <-- Inline, НЕ reply
+            reply_markup=keyboards.main_menu_keyboard()
         )
 
     async def menu_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -73,22 +72,13 @@ class TelegramHandlers:
         if not self._is_allowed(update): return
         
         if not context.args or len(context.args) == 0:
-            await update.message.reply_text(
-                "❌ Укажите символ\n\nПример: <code>/data BTCUSDT</code>",
-                parse_mode='HTML'
-            )
+            await update.message.reply_text("❌ Укажите символ\n\nПример: <code>/data BTCUSDT</code>", parse_mode='HTML')
             return
         
         symbol = context.args[0].upper()
-        
-        if not self.data_exporter.can_export(symbol):
-            await update.message.reply_text(
-                f"⏳ Подождите {self.data_exporter._export_cooldown} секунд перед следующим запросом"
-            )
-            return
-        
         await update.message.reply_text(f"⏳ Выгружаю данные {symbol}...")
-        filepath = self.data_exporter.export_symbol_data(symbol, "linear")
+        
+        filepath = self._generate_export_file([symbol])
         
         if filepath and os.path.exists(filepath):
             filename = os.path.basename(filepath)
@@ -97,7 +87,7 @@ class TelegramHandlers:
                     document=InputFile(f, filename=filename),
                     caption=f"✅ {symbol} данные выгружены\n15m: 150 свечей\n1H: 100 свечей\n4H: 70 свечей"
                 )
-            os.remove(filepath)  # Очищаем временный файл
+            os.remove(filepath)
         else:
             await update.message.reply_text("❌ Не удалось получить данные. Попробуйте позже.")
 
@@ -109,7 +99,7 @@ class TelegramHandlers:
         text = update.message.text.strip()
         state = self.user_state.get(chat_id, {})
         
-        # 1. Обработка ввода тикеров для экспорта
+        # 1. Обработка ручного ввода тикеров для экспорта
         if state.get('step') == 'waiting_for_export_tickers':
             tickers_input = text.upper().split()
             valid_tickers = [t for t in tickers_input if t.endswith('USDT') and len(t) >= 6]
@@ -124,7 +114,7 @@ class TelegramHandlers:
                 return
             
             await update.message.reply_text(f"⏳ Генерирую файл для {len(valid_tickers)} тикеров...")
-            filepath = await self._generate_export_file(valid_tickers)
+            filepath = self._generate_export_file(valid_tickers)
             
             if filepath and os.path.exists(filepath):
                 filename = os.path.basename(filepath)
@@ -133,7 +123,7 @@ class TelegramHandlers:
                         document=InputFile(f, filename=filename),
                         caption=f"✅ Данные выгружены для: {', '.join(valid_tickers)}"
                     )
-                os.remove(filepath) # Очищаем временный файл
+                os.remove(filepath)
             else:
                 await update.message.reply_text("❌ Ошибка при генерации файла.")
             
@@ -167,6 +157,7 @@ class TelegramHandlers:
             await self._process_bulk_add(update, lines)
             return
             
+        # 4. Одиночное добавление алерта
         parts = text.split(maxsplit=3)
         if len(parts) >= 3:
             symbol = parts[0].upper()
@@ -211,13 +202,17 @@ class TelegramHandlers:
                         if self.alerts_manager.add_alert(symbol, price, direction, category, clean_note):
                             success_count += 1
                         else:
-                            fail_count += 1; failed_details.append(f"• {line} (ошибка)")
+                            fail_count += 1
+                            failed_details.append(f"• {line} (уже существует)")
                     else:
-                        fail_count += 1; failed_details.append(f"• {line} (ошибка)")
+                        fail_count += 1
+                        failed_details.append(f"• {line} (ошибка направления)")
                 except ValueError:
-                    fail_count += 1; failed_details.append(f"• {line} (ошибка цены)")
+                    fail_count += 1
+                    failed_details.append(f"• {line} (ошибка цены)")
             else:
-                fail_count += 1; failed_details.append(f"• {line} (формат)")
+                fail_count += 1
+                failed_details.append(f"• {line} (неверный формат)")
         
         report = f"📊 <b>Результат:</b>\n✅ Успешно: <b>{success_count}</b>\n"
         if fail_count > 0:
@@ -245,59 +240,38 @@ class TelegramHandlers:
             self.user_state[chat_id] = {'step': 'waiting_symbol'}
             await query.edit_message_text("➕ <b>Алерт</b>\nВведите тикер:", parse_mode='HTML', reply_markup=keyboards.cancel_keyboard())
             
+        # --- ЛОГИКА ЭКСПОРТА (ИСПРАВЛЕНА) ---
         elif data == "menu_export":
-            self.user_state[chat_id] = {'step': 'waiting_for_export_tickers'}
             await query.edit_message_text(
-                "📊 <b>Выгрузка данных</b>\n\n"
-                "Введите тикеры через пробел, данные по которым нужно выгрузить.\n"
-                "Например: <code>BTCUSDT ETHUSDT SOLUSDT</code>",
+                "📊 <b>Выгрузка данных</b>\n\nВыберите способ выгрузки:",
                 parse_mode='HTML',
-                reply_markup=keyboards.cancel_keyboard()
-            )
-                    elif data == "menu_export":
-            # Показываем подменю выбора типа выгрузки
-            await query.edit_message_text(
-                "📊 <b>Выгрузка данных</b>\n\n"
-                "Выберите способ выгрузки:",
-                parse_mode='HTML',
-                reply_markup=keyboards.export_tracked_keyboard()
+                reply_markup=keyboards.export_options_keyboard()
             )
             
         elif data == "export_tracked":
-            # Выгрузка по всем отслеживаемым алертам
             assets = self.alerts_manager.get_all_alerts()
             if not assets:
-                await query.edit_message_text(
-                    " Нет отслеживаемых активов. Добавьте алерты сначала.",
-                    reply_markup=keyboards.main_menu_keyboard()
-                )
+                await query.edit_message_text("📋 Нет отслеживаемых активов. Добавьте алерты сначала.", reply_markup=keyboards.main_menu_keyboard())
                 return
             
             symbols = list(set(a.symbol for a in assets))
-            await query.edit_message_text(f"⏳ Выгружаю данные для {len(symbols)} активов: {', '.join(symbols)}...")
+            await query.edit_message_text(f"⏳ Выгружаю данные для {len(symbols)} активов...")
             
-            filepath = self.data_exporter.export_multiple_symbols(symbols, "linear")
+            filepath = self._generate_export_file(symbols)
             
-            if filepath:
+            if filepath and os.path.exists(filepath):
+                filename = os.path.basename(filepath)
                 with open(filepath, 'rb') as f:
                     await update.callback_query.message.reply_document(
-                        document=InputFile(f, filename=filepath.name),
-                        caption=f"✅ Данные выгружены\nАктивов: {len(symbols)}\n" + 
-                                f"📋 {', '.join(symbols)}"
+                        document=InputFile(f, filename=filename),
+                        caption=f"✅ Данные выгружены\nАктивов: {len(symbols)}\n📋 {', '.join(symbols)}"
                     )
-                filepath.unlink()
-                await query.edit_message_text(
-                    "✅ Файл отправлен!",
-                    reply_markup=keyboards.main_menu_keyboard()
-                )
+                os.remove(filepath)
+                await query.edit_message_text("✅ Файл отправлен!", reply_markup=keyboards.main_menu_keyboard())
             else:
-                await query.edit_message_text(
-                    "❌ Ошибка экспорта",
-                    reply_markup=keyboards.main_menu_keyboard()
-                )
+                await query.edit_message_text("❌ Ошибка экспорта", reply_markup=keyboards.main_menu_keyboard())
                 
         elif data == "export_manual":
-            # Ручной ввод тикеров
             self.user_state[chat_id] = {'step': 'waiting_for_export_tickers'}
             await query.edit_message_text(
                 "✏️ <b>Ручная выгрузка</b>\n\n"
@@ -306,6 +280,7 @@ class TelegramHandlers:
                 parse_mode='HTML',
                 reply_markup=keyboards.cancel_keyboard()
             )
+        # --- КОНЕЦ ЛОГИКИ ЭКСПОРТА ---
             
         elif data == "menu_screener":
             await self._run_screener_simple(update, chat_id)
@@ -366,9 +341,8 @@ class TelegramHandlers:
             await query.answer()
 
     # ==================== ЭКСПОРТ ДАННЫХ ====================
-    async def _generate_export_file(self, tickers: List[str]) -> Optional[str]:
+    def _generate_export_file(self, tickers: List[str]) -> Optional[str]:
         filename = f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        # Сохраняем в папку data проекта
         filepath = os.path.join(os.path.dirname(__file__), '..', '..', 'data', filename)
         os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
@@ -396,7 +370,6 @@ class TelegramHandlers:
             return None
 
     def _calculate_rsi_list(self, closes: List[float], period: int = 14) -> List[Optional[float]]:
-        # Bybit отдает свечи от новых к старым. Разворачиваем для расчета RSI.
         closes_rev = list(reversed(closes))
         if len(closes_rev) < period + 1:
             return [None] * len(closes)
@@ -426,7 +399,6 @@ class TelegramHandlers:
                 rs = avg_gain / avg_loss
                 rsi_values_rev.append(100 - (100 / (1 + rs)))
                 
-        # Разворачиваем обратно, чтобы порядок совпадал с исходными свечами (от новых к старым)
         return list(reversed(rsi_values_rev))
 
     # ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
@@ -471,7 +443,7 @@ class TelegramHandlers:
         text = (
             "ℹ️ <b>Справка</b>\n\n"
             "🔍 <b>Скринер:</b> показывает топ монет по движению цены за 24ч\n"
-            "📊 <b>Экспорт:</b> выгружает CSV с данными (15m, 1H, 4H) и RSI по выбранным тикерам\n"
+            "📊 <b>Экспорт:</b> выгружает CSV с данными (15m, 1H, 4H) и RSI\n"
             "⚡ <b>Алерт:</b> <code>TICKER PRICE DIR [NOTE]</code>\n"
             "Пример: <code>BTCUSDT 85000 up пробой</code>"
         )

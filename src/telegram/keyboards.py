@@ -65,3 +65,12 @@ def export_tracked_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
     ]
     return InlineKeyboardMarkup(keyboard)
+
+def export_options_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура выбора способа выгрузки данных"""
+    keyboard = [
+        [InlineKeyboardButton("📋 Выгрузить отслеживаемые", callback_data="export_tracked")],
+        [InlineKeyboardButton("✏️ Ввести тикеры вручную", callback_data="export_manual")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="menu_main")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
