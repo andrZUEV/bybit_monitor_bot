@@ -6,15 +6,13 @@ import logging
 import time
 from typing import Dict, Any, List
 
-from telegram import Update
+from telegram import Update, InlineKeyboardMarkup, InputFile
 from telegram.ext import ContextTypes
 
 from src.core.alerts import AlertsManager
-from src.api.bybit_client import BybitClient, ScreenerAsset
+from src.api.bybit_client import BybitClient
 from src.telegram import keyboards
-
 from src.utils.data_exporter import DataExporter
-from telegram import InputFile
 
 logger = logging.getLogger(__name__)
 
@@ -26,9 +24,9 @@ class TelegramHandlers:
         self.bybit_client = bybit_client
         self.data_exporter = DataExporter(bybit_client)
         self.user_state: Dict[int, Dict[str, Any]] = {}
-        
         self._screener_cache: Dict[str, tuple] = {}
         self._screener_cache_ttl = 120
+        self._last_screener_query: Dict[int, Dict[str, Any]] = {}
     
     def _is_allowed(self, update: Update) -> bool:
         return str(update.effective_chat.id) == self.allowed_chat_id
@@ -40,18 +38,24 @@ class TelegramHandlers:
     async def start_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update): return
         self._reset_state(update.effective_chat.id)
+        total_alerts = sum(len(a.alerts) for a in self.alerts_manager.get_all_alerts())
         await update.message.reply_text(
             "👋 <b>Bybit Monitor Bot</b>\n\n"
             "🔍 <b>Скринер:</b> ищите монеты с сильным движением!\n"
-            "⚡ <b>Алерты:</b> получайте уведомления о пробоях.",
+            "⚡ <b>Алерты:</b> получайте уведомления о пробоях.\n\n"
+            f"📊 <b>Статус:</b>\n"
+            f"• Отслеживается алертов: <b>{total_alerts}</b>\n"
+            f"• Интервал опроса: <b>4 сек</b>\n"
+            f"• Кулдаун: <b>25 мин</b>\n\n"
+            "Выберите действие:",
             parse_mode='HTML',
-            reply_markup=keyboards.main_menu_keyboard()  # Inline-клавиатура
+            reply_markup=keyboards.main_menu_keyboard()
         )
 
     async def menu_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update): return
         self._reset_state(update.effective_chat.id)
-        await update.message.reply_text("🏠 <b>Главное меню</b>", parse_mode='HTML', reply_markup=reply_keyboard())
+        await update.message.reply_text("🏠 <b>Главное меню</b>", parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
 
     async def list_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update): return
@@ -61,6 +65,31 @@ class TelegramHandlers:
         if not self._is_allowed(update): return
         await self._show_help(update)
 
+    async def data_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /data SYMBOL"""
+        if not self._is_allowed(update): return
+        if not context.args or len(context.args) == 0:
+            await update.message.reply_text("❌ Укажите символ\n\nПример: <code>/data BTCUSDT</code>", parse_mode='HTML')
+            return
+        
+        symbol = context.args[0].upper()
+        if not self.data_exporter.can_export(symbol):
+            await update.message.reply_text(f"⏳ Подождите {self.data_exporter._export_cooldown} секунд перед следующим запросом")
+            return
+        
+        await update.message.reply_text(f"⏳ Выгружаю данные {symbol}...")
+        filepath = self.data_exporter.export_symbol_data(symbol, "linear")
+        
+        if filepath:
+            with open(filepath, 'rb') as f:
+                await update.message.reply_document(
+                    document=InputFile(f, filename=filepath.name),
+                    caption=f"✅ {symbol} данные выгружены\n15m: 150 свечей\n1H: 100 свечей\n4H: 70 свечей"
+                )
+            filepath.unlink()
+        else:
+            await update.message.reply_text("❌ Не удалось получить данные. Попробуйте позже.")
+
     # ==================== ТЕКСТОВЫЕ СООБЩЕНИЯ ====================
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update): return
@@ -68,7 +97,7 @@ class TelegramHandlers:
         chat_id = update.effective_chat.id
         text = update.message.text.strip()
         state = self.user_state.get(chat_id, {})
-
+        
         if state.get('step') == 'waiting_symbol':
             symbol = text.upper().replace(' ', '')
             if len(symbol) < 4 or not symbol.isalpha():
@@ -171,7 +200,6 @@ class TelegramHandlers:
             self.user_state[chat_id] = {'step': 'waiting_symbol'}
             await query.edit_message_text("➕ <b>Алерт</b>\nВведите тикер:", parse_mode='HTML', reply_markup=keyboards.cancel_keyboard())
             
-        # ==================== СКРИНЕР (УПРОЩЕННЫЙ) ====================
         elif data == "menu_screener":
             await self._run_screener_simple(update, chat_id)
             
@@ -183,7 +211,6 @@ class TelegramHandlers:
             symbol = data.replace("scr_add_", "")
             self.user_state[chat_id] = {'step': 'waiting_price', 'symbol': symbol}
             await query.edit_message_text(f"➕ <b>Алерт на {symbol}</b>\nВведите цену:", parse_mode='HTML', reply_markup=keyboards.cancel_keyboard())
-        # ==================== КОНЕЦ СКРИНЕРА ====================
             
         elif data == "menu_prices":
             await self._handle_current_prices(update)
@@ -230,17 +257,10 @@ class TelegramHandlers:
         elif data == "menu_help":
             await self._show_help(update)
             
-        elif data == "noop":
-            await query.answer()
-
-        # НОВОЕ: Выгрузка данных по всем алертам
         elif data == "export_all_alerts":
             assets = self.alerts_manager.get_all_alerts()
             if not assets:
-                await query.edit_message_text(
-                    "📋 Нет отслеживаемых активов",
-                    reply_markup=keyboards.main_menu_keyboard()
-                )
+                await query.edit_message_text("📋 Нет отслеживаемых активов", reply_markup=keyboards.main_menu_keyboard())
                 return
             
             symbols = list(set(a.symbol for a in assets))
@@ -255,53 +275,36 @@ class TelegramHandlers:
                         caption=f"✅ Данные выгружены\nАктивов: {len(symbols)}"
                     )
                 filepath.unlink()
-                await query.edit_message_text(
-                    "✅ Файл отправлен",
-                    reply_markup=keyboards.main_menu_keyboard()
-                )
+                await query.edit_message_text("✅ Файл отправлен", reply_markup=keyboards.main_menu_keyboard())
             else:
-                await query.edit_message_text(
-                    "❌ Ошибка экспорта",
-                    reply_markup=keybo
+                await query.edit_message_text("❌ Ошибка экспорта", reply_markup=keyboards.main_menu_keyboard())
 
         elif data == "export_screener":
-            # Получаем последний результат скринера
-            last_query = self._last_screener_query.get(chat_id)
-            if not last_query:
-                await query.edit_message_text(
-                    "❌ Нет данных скринера",
-                    reply_markup=keyboards.main_menu_keyboard()
-                )
-                return
-            
-            # Здесь нужно сохранить список символов из скринера
-            # Для простоты выгружаем все отслеживаемые активы
             assets = self.alerts_manager.get_all_alerts()
             symbols = list(set(a.symbol for a in assets))
+            if not symbols:
+                await query.edit_message_text("❌ Нет данных для выгрузки", reply_markup=keyboards.main_menu_keyboard())
+                return
             
-            await query.edit_message_text(f"⏳ Выгружаю данные...")
-            
+            await query.edit_message_text("⏳ Выгружаю данные скринера...")
             filepath = self.data_exporter.export_multiple_symbols(symbols, "linear")
             
             if filepath:
                 with open(filepath, 'rb') as f:
                     await update.callback_query.message.reply_document(
                         document=InputFile(f, filename=filepath.name),
-                        caption=f"✅ Данные выгружены\nАктивов: {len(symbols)}"
+                        caption=f"✅ Данные скринера выгружены\nАктивов: {len(symbols)}"
                     )
                 filepath.unlink()
-                await query.edit_message_text(
-                    "✅ Файл отправлен",
-                    reply_markup=keyboards.main_menu_keyboard()
-                )
+                await query.edit_message_text("✅ Файл отправлен", reply_markup=keyboards.main_menu_keyboard())
             else:
-                await query.edit_message_text(
-                    "❌ Ошибка экспорта",
-                    reply_markup=keyboards.main_menu_keyboard()
-                )
+                await query.edit_message_text("❌ Ошибка экспорта", reply_markup=keyboards.main_menu_keyboard())
+                
+        elif data == "noop":
+            await query.answer()
+
     # ==================== СКРИНЕР ====================
     async def _run_screener_simple(self, update: Update, chat_id: int):
-        """Упрощенный скринер - сразу показывает топ по абсолютному изменению цены"""
         query = update.callback_query
         try:
             await query.edit_message_text("⏳ <b>Анализирую рынок...</b>", parse_mode='HTML')
@@ -315,29 +318,16 @@ class TelegramHandlers:
             assets, fetch_time = cached
             from_cache = True
         else:
-            # Получаем данные с фильтром: мин объем 1 млн $, мин изменение 3%
             assets = self.bybit_client.get_screener_data(
-                category="linear",
-                sort_by="volume_desc",  # Сортируем по объему для стабильности
-                min_volume_usd=1_000_000,
-                min_change_abs=3.0,  # Минимум 3% движения
-                limit=20
+                category="linear", sort_by="volume_desc", min_volume_usd=1_000_000, min_change_abs=3.0, limit=20
             )
-            
-            # Сортируем по абсолютному изменению цены (не важно + или -)
             assets.sort(key=lambda x: abs(x.price_change_24h), reverse=True)
-            
             fetch_time = time.time()
             self._screener_cache[cache_key] = (fetch_time, assets)
             from_cache = False
         
         if not assets:
-            await query.edit_message_text(
-                "❌ <b>Ничего не найдено</b>\n\n"
-                "Попробуйте позже или уменьшите фильтры.",
-                parse_mode='HTML',
-                reply_markup=keyboards.main_menu_keyboard()
-            )
+            await query.edit_message_text("❌ <b>Ничего не найдено</b>\n\nПопробуйте позже или уменьшите фильтры.", parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
             return
         
         text = self._format_screener_simple(assets, fetch_time, from_cache)
@@ -345,19 +335,16 @@ class TelegramHandlers:
         
         await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.screener_add_alert_keyboard(top_symbol))
     
-    def _format_screener_simple(self, assets: List[ScreenerAsset], fetch_time: float, from_cache: bool) -> str:
-        """Форматирует результаты упрощенного скринера"""
+    def _format_screener_simple(self, assets: List, fetch_time: float, from_cache: bool) -> str:
         text = "🔍 <b>ТОП ПО ДВИЖЕНИЮ ЦЕНЫ</b> (24ч)\n"
         text += "<i>Отсортировано по абсолютному изменению (не важно + или -)</i>\n"
         text += "<i>Фильтры: >= 3% движения, >= 1M$ объема</i>\n\n"
         text += "━" * 30 + "\n\n"
         
-        for i, asset in enumerate(assets[:15], 1):  # Показываем топ 15
+        for i, asset in enumerate(assets[:15], 1):
             change_emoji = "🚀" if asset.price_change_24h > 5 else "💥" if asset.price_change_24h < -5 else "🟢" if asset.price_change_24h > 0 else "🔴"
-            
             vol = asset.volume_24h
             vol_str = f"${vol/1_000_000_000:.2f}B" if vol >= 1e9 else f"${vol/1_000_000:.2f}M" if vol >= 1e6 else f"${vol/1_000:.1f}K"
-            
             price_str = f"{asset.price:,.2f}" if asset.price >= 100 else f"{asset.price:,.4f}" if asset.price >= 1 else f"{asset.price:,.6f}"
             
             text += f"<b>{i:2d}.</b> <code>{asset.symbol}</code>\n"
@@ -367,10 +354,10 @@ class TelegramHandlers:
         text += "━" * 30 + "\n"
         text += f"<i>{'📥 Из кэша' if from_cache else '🔄 Свежие данные'} ({int(time.time() - fetch_time)}с назад)</i>"
         return text
-    # ==================== КОНЕЦ СКРИНЕРА ====================
 
     async def _handle_current_prices(self, update: Update):
         query = update.callback_query
+        await query.answer()
         await query.edit_message_text("⏳ Загружаю цены...")
         assets = self.alerts_manager.get_all_alerts()
         if not assets:
@@ -409,6 +396,7 @@ class TelegramHandlers:
         text = (
             "ℹ️ <b>Справка</b>\n\n"
             "🔍 <b>Скринер:</b> показывает топ монет по движению цены за 24ч\n"
+            "📊 <b>Экспорт:</b> используйте /data SYMBOL или кнопку в меню\n"
             "⚡ <b>Алерт:</b> <code>TICKER PRICE DIR [NOTE]</code>\n"
             "Пример: <code>BTCUSDT 85000 up пробой</code>"
         )
@@ -416,45 +404,3 @@ class TelegramHandlers:
             await update.callback_query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
         else:
             await update.message.reply_text(text, parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
-    
-        async def data_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /data SYMBOL"""
-        if not self._is_allowed(update):
-            return
-        
-        # Проверяем аргумент
-        if not context.args or len(context.args) == 0:
-            await update.message.reply_text(
-                "❌ Укажите символ\n\n"
-                "Пример: <code>/data BTCUSDT</code>",
-                parse_mode='HTML'
-            )
-            return
-        
-        symbol = context.args[0].upper()
-        
-        # Проверяем кулдаун
-        if not self.data_exporter.can_export(symbol):
-            await update.message.reply_text(
-                f"⏳ Подождите {self.data_exporter._export_cooldown} секунд перед следующим запросом"
-            )
-            return
-        
-        await update.message.reply_text(f"⏳ Выгружаю данные {symbol}...")
-        
-        filepath = self.data_exporter.export_symbol_data(symbol, "linear")
-        
-        if filepath:
-            # Отправляем файл
-            with open(filepath, 'rb') as f:
-                await update.message.reply_document(
-                    document=InputFile(f, filename=filepath.name),
-                    caption=f"✅ {symbol} данные выгружены\n15m: 150 свечей\n1H: 100 свечей\n4H: 70 свечей"
-                )
-            
-            # Удаляем файл после отправки
-            filepath.unlink()
-        else:
-            await update.message.reply_text(
-                "❌ Не удалось получить данные. Попробуйте позже."
-            )
