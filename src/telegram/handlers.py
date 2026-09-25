@@ -2,6 +2,7 @@
 Обработчики команд и callback'ов Telegram бота
 """
 
+import os
 import logging
 import time
 from typing import Dict, Any, List
@@ -217,6 +218,32 @@ class TelegramHandlers:
         elif data == "scr_refresh":
             self._screener_cache.clear()
             await self._run_screener_simple(update, chat_id)
+
+        elif data == "export_screener":
+            # Проверяем, есть ли результаты скринера
+            if not hasattr(self, '_last_screener_results') or not self._last_screener_results:
+                await query.edit_message_text(
+                    " Сначала запустите скринер, чтобы были данные для выгрузки",
+                    reply_markup=keyboards.main_menu_keyboard()
+                )
+                return
+            
+            symbols = [asset.symbol for asset in self._last_screener_results]
+            await query.edit_message_text(f"⏳ Выгружаю данные для {len(symbols)} активов из скринера...")
+            
+            filepath = self._generate_export_file(symbols)
+            
+            if filepath and os.path.exists(filepath):
+                filename = os.path.basename(filepath)
+                with open(filepath, 'rb') as f:
+                    await update.callback_query.message.reply_document(
+                        document=InputFile(f, filename=filename),
+                        caption=f"✅ Данные скринера выгружены\nАктивов: {len(symbols)}\n📋 {', '.join(symbols[:10])}{'...' if len(symbols) > 10 else ''}"
+                    )
+                os.remove(filepath)
+                await query.edit_message_text("✅ Файл отправлен!", reply_markup=keyboards.main_menu_keyboard())
+            else:
+                await query.edit_message_text("❌ Ошибка экспорта", reply_markup=keyboards.main_menu_keyboard())
                 
         elif data.startswith("scr_add_"):
             symbol = data.replace("scr_add_", "")
@@ -298,6 +325,8 @@ class TelegramHandlers:
         if not assets:
             await query.edit_message_text("❌ <b>Ничего не найдено</b>\n\nПопробуйте позже или уменьшите фильтры.", parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
             return
+
+        self._last_screener_results = assets
         
         text = self._format_screener_simple(assets, fetch_time, from_cache)
         top_symbol = assets[0].symbol

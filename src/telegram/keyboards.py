@@ -50,9 +50,11 @@ def alerts_list_keyboard(assets: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 def screener_add_alert_keyboard(symbol: str) -> InlineKeyboardMarkup:
+    """Кнопки под результатами скринера"""
     keyboard = [
         [InlineKeyboardButton(f"➕ Алерт на {symbol}", callback_data=f"scr_add_{symbol}")],
         [InlineKeyboardButton("🔄 Обновить", callback_data="scr_refresh")],
+        [InlineKeyboardButton("📊 Выгрузить данные скринера", callback_data="export_screener")],
         [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
     ]
     return InlineKeyboardMarkup(keyboard)
