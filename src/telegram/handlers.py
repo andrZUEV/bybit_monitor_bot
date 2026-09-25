@@ -152,6 +152,37 @@ class TelegramHandlers:
         text = update.message.text.strip()
         state = self.user_state.get(chat_id, {})
         
+        # ==================== ДОБАВИТЬ ЭТОТ БЛОК ====================
+        if state.get('step') == 'waiting_for_export_tickers':
+            tickers_input = text.upper().split()
+            valid_tickers = [t for t in tickers_input if t.endswith('USDT') and len(t) >= 6]
+            
+            if not valid_tickers:
+                await update.message.reply_text(
+                    "❌ Неверный формат. Введите тикеры, заканчивающиеся на USDT, через пробел.\n"
+                    "Например: <code>BTCUSDT ETHUSDT</code>",
+                    parse_mode='HTML',
+                    reply_markup=keyboards.cancel_keyboard()
+                )
+                return
+            
+            await update.message.reply_text(f"⏳ Генерирую файл для {len(valid_tickers)} тикеров...")
+            filepath = self._generate_export_file(valid_tickers)
+            
+            if filepath and os.path.exists(filepath):
+                with open(filepath, 'rb') as f:
+                    await update.message.reply_document(
+                        document=InputFile(f, filename=os.path.basename(filepath)),
+                        caption=f"✅ Данные выгружены для: {', '.join(valid_tickers)}"
+                    )
+                os.remove(filepath)
+            else:
+                await update.message.reply_text("❌ Ошибка при генерации файла.")
+            
+            self._reset_state(chat_id)
+            return
+        # ==================== КОНЕЦ БЛОКА ====================
+        
         if state.get('step') == 'waiting_symbol':
             symbol = text.upper().replace(' ', '')
             if len(symbol) < 4 or not symbol.isalpha():
@@ -279,6 +310,51 @@ class TelegramHandlers:
             self._screener_cache.clear()
             await self._run_screener_simple(update, chat_id)
 
+        # ==================== ДОБАВИТЬ ЭТОТ БЛОК ====================
+        elif data == "menu_export":
+            await query.edit_message_text(
+                "📊 <b>Выгрузка данных</b>\n\nВыберите способ выгрузки:",
+                parse_mode='HTML',
+                reply_markup=keyboards.export_options_keyboard()
+            )
+            
+        elif data == "export_tracked":
+            assets = self.alerts_manager.get_all_alerts()
+            if not assets:
+                await query.edit_message_text(
+                    "📋 Нет отслеживаемых активов. Добавьте алерты сначала.",
+                    reply_markup=keyboards.main_menu_keyboard()
+                )
+                return
+            
+            symbols = list(set(a.symbol for a in assets))
+            await query.edit_message_text(f"⏳ Выгружаю данные для {len(symbols)} активов...")
+            
+            filepath = self._generate_export_file(symbols)
+            
+            if filepath and os.path.exists(filepath):
+                with open(filepath, 'rb') as f:
+                    await update.callback_query.message.reply_document(
+                        document=InputFile(f, filename=os.path.basename(filepath)),
+                        caption=f"✅ Данные выгружены\nАктивов: {len(symbols)}\n📋 {', '.join(symbols)}"
+                    )
+                os.remove(filepath)
+                await query.edit_message_text("✅ Файл отправлен!", reply_markup=keyboards.main_menu_keyboard())
+            else:
+                await query.edit_message_text("❌ Ошибка экспорта", reply_markup=keyboards.main_menu_keyboard())
+                
+        elif data == "export_manual":
+            self.user_state[chat_id] = {'step': 'waiting_for_export_tickers'}
+            await query.edit_message_text(
+                "✏️ <b>Ручная выгрузка</b>\n\n"
+                "Введите тикеры через пробел:\n"
+                "Например: <code>BTCUSDT ETHUSDT</code>",
+                parse_mode='HTML',
+                reply_markup=keyboards.cancel_keyboard()
+            )
+        # ==================== КОНЕЦ БЛОКА ====================
+
+        elif data == "export_screener":
         elif data == "export_screener":
             if not self._last_screener_results:
                 await query.edit_message_text(
