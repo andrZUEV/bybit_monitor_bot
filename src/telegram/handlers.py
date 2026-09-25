@@ -4,8 +4,10 @@
 
 import os
 import logging
-import time
-from typing import Dict, Any, List
+import csv
+from datetime import datetime
+from typing import Dict, Any, List, Optional
+from pathlib import Path
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from telegram.ext import ContextTypes
@@ -17,6 +19,43 @@ from src.utils.data_exporter import DataExporter
 
 logger = logging.getLogger(__name__)
 
+def calculate_rsi(closes: List[float], period: int = 14) -> List[Optional[float]]:
+    """
+    Расчёт RSI(14) по формуле Wilder
+    Возвращает список значений RSI (None для первых period свечей)
+    """
+    if len(closes) < period + 1:
+        return [None] * len(closes)
+    
+    # Bybit отдаёт свечи от новых к старым, разворачиваем
+    closes_rev = list(reversed(closes))
+    changes = [closes_rev[i] - closes_rev[i - 1] for i in range(1, len(closes_rev))]
+    gains = [max(c, 0) for c in changes]
+    losses = [max(-c, 0) for c in changes]
+    
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    
+    rsi_values_rev = [None] * period
+    
+    if avg_loss == 0:
+        rsi_values_rev.append(100.0)
+    else:
+        rs = avg_gain / avg_loss
+        rsi_values_rev.append(100 - (100 / (1 + rs)))
+    
+    for i in range(period, len(changes)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        
+        if avg_loss == 0:
+            rsi_values_rev.append(100.0)
+        else:
+            rs = avg_gain / avg_loss
+            rsi_values_rev.append(100 - (100 / (1 + rs)))
+    
+    # Разворачиваем обратно
+    return list(reversed(rsi_values_rev))
 
 class TelegramHandlers:
     def __init__(self, alerts_manager: AlertsManager, allowed_chat_id: str, bybit_client: BybitClient):
@@ -399,3 +438,68 @@ class TelegramHandlers:
             await update.callback_query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
         else:
             await update.message.reply_text(text, parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
+
+    def _generate_export_file(self, tickers: List[str]) -> Optional[str]:
+        """
+        Генерирует CSV файл с данными свечей для списка тикеров
+        
+        Args:
+            tickers: Список тикеров (например, ['BTCUSDT', 'ETHUSDT'])
+            
+        Returns:
+            Путь к созданному файлу или None при ошибке
+        """
+        try:
+            # Создаём файл во временной папке
+            data_dir = Path(__file__).parent.parent.parent / "data" / "exports"
+            data_dir.mkdir(parents=True, exist_ok=True)
+            
+            filename = f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            filepath = data_dir / filename
+            
+            with open(filepath, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                # Заголовок
+                writer.writerow(['Ticker', 'Timeframe', 'Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'RSI'])
+                
+                for ticker in tickers:
+                    # Получаем данные для 3 таймфреймов
+                    for tf, tf_name in [('15', '15m'), ('60', '1H'), ('240', '4H')]:
+                        try:
+                            klines = self.bybit_client.get_klines(ticker, 'linear', tf, 150)
+                            if not klines:
+                                continue
+                            
+                            # Извлекаем цены закрытия для RSI
+                            closes = [float(k[4]) for k in klines]
+                            rsi_values = calculate_rsi(closes, period=14)
+                            
+                            # Записываем свечи (от старых к новым)
+                            for i, k in enumerate(reversed(klines)):
+                                timestamp_ms = int(k[0])
+                                dt = datetime.fromtimestamp(timestamp_ms / 1000)
+                                time_str = dt.strftime('%Y-%m-%d %H:%M')
+                                
+                                open_price = float(k[1])
+                                high = float(k[2])
+                                low = float(k[3])
+                                close = float(k[4])
+                                volume = float(k[5])
+                                
+                                # RSI (берём соответствующее значение)
+                                rsi_idx = len(klines) - 1 - i
+                                rsi = rsi_values[rsi_idx] if rsi_idx < len(rsi_values) else None
+                                rsi_str = f"{rsi:.1f}" if rsi is not None else "N/A"
+                                
+                                writer.writerow([ticker, tf_name, time_str, open_price, high, low, close, volume, rsi_str])
+                                
+                        except Exception as e:
+                            logger.error(f"Ошибка получения данных для {ticker} {tf}: {e}")
+                            continue
+            
+            logger.info(f"✅ Файл экспорта создан: {filepath}")
+            return str(filepath)
+            
+        except Exception as e:
+            logger.error(f"Ошибка генерации файла экспорта: {e}")
+            return None
