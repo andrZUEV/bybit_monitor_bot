@@ -3,6 +3,7 @@
 """
 
 import os
+import time  # <-- ДОБАВИТЬ ЭТУ СТРОКУ
 import logging
 import csv
 from datetime import datetime
@@ -18,6 +19,7 @@ from src.telegram import keyboards
 from src.utils.data_exporter import DataExporter
 
 logger = logging.getLogger(__name__)
+# ... дальше идет ваш код без изменений ...
 
 def calculate_rsi(closes: List[float], period: int = 14) -> List[Optional[float]]:
     """
