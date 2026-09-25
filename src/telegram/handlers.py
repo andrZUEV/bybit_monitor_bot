@@ -27,6 +27,7 @@ class TelegramHandlers:
         self._screener_cache: Dict[str, tuple] = {}
         self._screener_cache_ttl = 120
         self._last_screener_query: Dict[int, Dict[str, Any]] = {}
+        self._last_screener_results: List = [] 
     
     def _is_allowed(self, update: Update) -> bool:
         return str(update.effective_chat.id) == self.allowed_chat_id
@@ -280,26 +281,31 @@ class TelegramHandlers:
                 await query.edit_message_text("❌ Ошибка экспорта", reply_markup=keyboards.main_menu_keyboard())
 
         elif data == "export_screener":
-            assets = self.alerts_manager.get_all_alerts()
-            symbols = list(set(a.symbol for a in assets))
-            if not symbols:
-                await query.edit_message_text("❌ Нет данных для выгрузки", reply_markup=keyboards.main_menu_keyboard())
+            # Проверяем, запускали ли мы скринер
+            if not self._last_screener_results:
+                await query.edit_message_text(
+                    "❌ Сначала запустите скринер, чтобы были данные для выгрузки", 
+                    reply_markup=keyboards.main_menu_keyboard()
+                )
                 return
             
-            await query.edit_message_text("⏳ Выгружаю данные скринера...")
+            # Берем символы ИМЕННО из результатов скринера
+            symbols = [asset.symbol for asset in self._last_screener_results]
+            
+            await query.edit_message_text("⏳ Выгружаю данные по активам из скринера...")
+            
             filepath = self.data_exporter.export_multiple_symbols(symbols, "linear")
             
             if filepath:
                 with open(filepath, 'rb') as f:
                     await update.callback_query.message.reply_document(
                         document=InputFile(f, filename=filepath.name),
-                        caption=f"✅ Данные скринера выгружены\nАктивов: {len(symbols)}"
+                        caption=f"✅ Данные выгружены\nАктивов из скринера: {len(symbols)}"
                     )
-                filepath.unlink()
+                filepath.unlink() # Удаляем файл с сервера после отправки
                 await query.edit_message_text("✅ Файл отправлен", reply_markup=keyboards.main_menu_keyboard())
             else:
                 await query.edit_message_text("❌ Ошибка экспорта", reply_markup=keyboards.main_menu_keyboard())
-                
         elif data == "noop":
             await query.answer()
 
@@ -334,6 +340,14 @@ class TelegramHandlers:
         top_symbol = assets[0].symbol
         
         await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.screener_add_alert_keyboard(top_symbol))
+
+        text = self._format_screener_simple(assets, fetch_time, from_cache)
+        top_symbol = assets[0].symbol
+        
+        # <-- ДОБАВИТЬ ЭТУ СТРОКУ: запоминаем активы для экспорта
+        self._last_screener_results = assets 
+        
+        await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.screener_add_aler        
     
     def _format_screener_simple(self, assets: List, fetch_time: float, from_cache: bool) -> str:
         text = "🔍 <b>ТОП ПО ДВИЖЕНИЮ ЦЕНЫ</b> (24ч)\n"
