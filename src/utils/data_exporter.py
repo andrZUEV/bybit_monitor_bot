@@ -62,16 +62,14 @@ def calculate_rsi(closes: List[float], period: int = 14) -> List[Optional[float]
 class DataExporter:
     """Экспорт свечных данных в текстовый файл"""
     
-    def __init__(self, alerts_manager: AlertsManager, allowed_chat_id: str, bybit_client: BybitClient):
-        self.alerts_manager = alerts_manager
-        self.allowed_chat_id = str(allowed_chat_id)
+    def __init__(self, bybit_client: BybitClient):
         self.bybit_client = bybit_client
-        self.data_exporter = DataExporter(bybit_client)  # <-- ДОБАВИТЬ
-        self.user_state: Dict[int, Dict[str, Any]] = {}
-        self._screener_cache: Dict[str, tuple] = {}
-        self._screener_cache_ttl = 120
-        self._last_screener_query: Dict[int, Dict[str, Any]] = {}
-        self._last_screener_results: List = []
+        self.data_dir = Path(__file__).parent.parent.parent / "data" / "exports"
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Кулдаун для предотвращения спама API
+        self._last_export_time: Dict[str, float] = {}
+        self._export_cooldown = 30  # 30 секунд между запросами для одного символа
     
     def can_export(self, symbol: str) -> bool:
         """Проверяет, можно ли сделать экспорт (кулдаун)"""
@@ -124,7 +122,7 @@ class DataExporter:
                     f.write("time;open;high;low;close;volume;rsi\n")
                     
                     # Получаем свечи
-                    klines = self.client.get_klines(
+                    klines = self.bybit_client.get_klines(
                         symbol, category, tf["interval"], tf["limit"]
                     )
                     
@@ -200,7 +198,7 @@ class DataExporter:
                         f.write(f"=== {symbol} | {tf['label']} | last {tf['limit']} candles ===\n")
                         f.write("time;open;high;low;close;volume;rsi\n")
                         
-                        klines = self.client.get_klines(
+                        klines = self.bybit_client.get_klines(
                             symbol, category, tf["interval"], tf["limit"]
                         )
                         
