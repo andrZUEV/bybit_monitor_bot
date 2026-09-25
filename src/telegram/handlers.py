@@ -347,7 +347,7 @@ class TelegramHandlers:
         # <-- ДОБАВИТЬ ЭТУ СТРОКУ: запоминаем активы для экспорта
         self._last_screener_results = assets 
         
-        await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.screener_add_aler        
+        await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.screener_add_alert_keyboard(top_symbol))      
     
     def _format_screener_simple(self, assets: List, fetch_time: float, from_cache: bool) -> str:
         text = "🔍 <b>ТОП ПО ДВИЖЕНИЮ ЦЕНЫ</b> (24ч)\n"
