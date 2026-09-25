@@ -3,7 +3,7 @@
 """
 
 import os
-import time  # <-- ДОБАВИТЬ ЭТУ СТРОКУ
+import time
 import logging
 import csv
 from datetime import datetime
@@ -19,7 +19,7 @@ from src.telegram import keyboards
 from src.utils.data_exporter import DataExporter
 
 logger = logging.getLogger(__name__)
-# ... дальше идет ваш код без изменений ...
+
 
 def calculate_rsi(closes: List[float], period: int = 14) -> List[Optional[float]]:
     """
@@ -56,8 +56,9 @@ def calculate_rsi(closes: List[float], period: int = 14) -> List[Optional[float]
             rs = avg_gain / avg_loss
             rsi_values_rev.append(100 - (100 / (1 + rs)))
     
-    # Разворачиваем обратно
+    # Разворачиваем обратно (чтобы порядок совпадал с исходными klines: от новых к старым)
     return list(reversed(rsi_values_rev))
+
 
 class TelegramHandlers:
     def __init__(self, alerts_manager: AlertsManager, allowed_chat_id: str, bybit_client: BybitClient):
@@ -70,6 +71,7 @@ class TelegramHandlers:
         self._screener_cache: Dict[str, tuple] = {}
         self._screener_cache_ttl = 120
         self._last_screener_query: Dict[int, Dict[str, Any]] = {}
+        self._last_screener_results: List = [] # Для хранения результатов скринера
     
     def _is_allowed(self, update: Update) -> bool:
         return str(update.effective_chat.id) == self.allowed_chat_id
@@ -187,14 +189,19 @@ class TelegramHandlers:
                     category = 'spot' if 'spot' in note.lower() or 'спот' in note.lower() else 'linear'
                     clean_note = note.replace('spot', '').replace('спот', '').strip()
                     
-                    success = self.alerts_manager.add_alert(symbol, price, direction, category, clean_note)
+                    # Безопасная распаковка результата (поддерживает и bool, и tuple)
+                    add_result = self.alerts_manager.add_alert(symbol, price, direction, category, clean_note)
+                    success = add_result[0] if isinstance(add_result, tuple) else add_result
+                    replaced = add_result[1] if isinstance(add_result, tuple) else False
+                    
                     dir_text = {"up": "снизу вверх 🟢", "down": "сверху вниз 🔴", "any": "любое ⚪️"}
                     note_display = f"\n📝 Сетап: <code>{clean_note}</code>" if clean_note else ""
                     
                     if success:
-                        await update.message.reply_text(f"✅ <b>Добавлено:</b>\n🪙 {symbol}\n💰 {price:,.2f}\n🎯 {dir_text[direction]}{note_display}", parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
+                        action_text = "🔄 <b>Заменено:</b>" if replaced else "✅ <b>Добавлено:</b>"
+                        await update.message.reply_text(f"{action_text}\n🪙 {symbol}\n💰 {price:,.2f}\n🎯 {dir_text[direction]}{note_display}", parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
                     else:
-                        await update.message.reply_text("⚠️ Уже существует", reply_markup=keyboards.main_menu_keyboard())
+                        await update.message.reply_text("⚠️ Ошибка добавления", reply_markup=keyboards.main_menu_keyboard())
                     return
             except ValueError:
                 pass
@@ -202,7 +209,7 @@ class TelegramHandlers:
         await update.message.reply_text("❓ Не понял команду.", parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
 
     async def _process_bulk_add(self, update: Update, lines: list[str]):
-        success_count = fail_count = 0
+        success_count = fail_count = replaced_count = 0
         failed_details = []
         for line in lines:
             if line.startswith('#') or line.startswith('//'): continue
@@ -216,18 +223,30 @@ class TelegramHandlers:
                     category = 'spot' if 'spot' in note.lower() or 'спот' in note.lower() else 'linear'
                     clean_note = note.replace('spot', '').replace('спот', '').strip()
                     if direction in ['up', 'down', 'any'] and len(symbol) >= 4:
-                        if self.alerts_manager.add_alert(symbol, price, direction, category, clean_note):
+                        add_result = self.alerts_manager.add_alert(symbol, price, direction, category, clean_note)
+                        success = add_result[0] if isinstance(add_result, tuple) else add_result
+                        replaced = add_result[1] if isinstance(add_result, tuple) else False
+                        
+                        if success:
                             success_count += 1
+                            if replaced:
+                                replaced_count += 1
                         else:
-                            fail_count += 1; failed_details.append(f"• {line} (ошибка)")
+                            fail_count += 1
+                            failed_details.append(f"• {line} (ошибка)")
                     else:
-                        fail_count += 1; failed_details.append(f"• {line} (ошибка)")
+                        fail_count += 1
+                        failed_details.append(f"• {line} (ошибка направления)")
                 except ValueError:
-                    fail_count += 1; failed_details.append(f"• {line} (ошибка цены)")
+                    fail_count += 1
+                    failed_details.append(f"• {line} (ошибка цены)")
             else:
-                fail_count += 1; failed_details.append(f"• {line} (формат)")
+                fail_count += 1
+                failed_details.append(f"• {line} (формат)")
         
         report = f"📊 <b>Результат:</b>\n✅ Успешно: <b>{success_count}</b>\n"
+        if replaced_count > 0:
+            report += f"🔄 Заменено: <b>{replaced_count}</b>\n"
         if fail_count > 0:
             report += f"❌ Ошибок: <b>{fail_count}</b>\n" + "\n".join(failed_details[:5])
         else:
@@ -261,10 +280,9 @@ class TelegramHandlers:
             await self._run_screener_simple(update, chat_id)
 
         elif data == "export_screener":
-            # Проверяем, есть ли результаты скринера
-            if not hasattr(self, '_last_screener_results') or not self._last_screener_results:
+            if not self._last_screener_results:
                 await query.edit_message_text(
-                    " Сначала запустите скринер, чтобы были данные для выгрузки",
+                    "⚠️ Сначала запустите скринер, чтобы были данные для выгрузки",
                     reply_markup=keyboards.main_menu_keyboard()
                 )
                 return
@@ -303,11 +321,15 @@ class TelegramHandlers:
             symbol = state['symbol']
             price = state['price']
             
-            success = self.alerts_manager.add_alert(symbol, price, direction, "linear", "")
+            add_result = self.alerts_manager.add_alert(symbol, price, direction, "linear", "")
+            success = add_result[0] if isinstance(add_result, tuple) else add_result
+            replaced = add_result[1] if isinstance(add_result, tuple) else False
+            
             self._reset_state(chat_id)
             
             dir_text = {"up": "снизу вверх 🟢", "down": "сверху вниз 🔴", "any": "любое ⚪️"}
-            await query.edit_message_text(f"✅ <b>Добавлено:</b>\n🪙 {symbol}\n💰 {price:,.2f}\n🎯 {dir_text[direction]}", parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
+            action_text = "🔄 <b>Заменено:</b>" if replaced else "✅ <b>Добавлено:</b>"
+            await query.edit_message_text(f"{action_text}\n🪙 {symbol}\n💰 {price:,.2f}\n🎯 {dir_text[direction]}", parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
             
         elif data in ["menu_list", "menu_remove"]:
             await self._show_list(update, context)
@@ -349,7 +371,6 @@ class TelegramHandlers:
         cached = self._screener_cache.get(cache_key)
         
         if cached and (time.time() - cached[0]) < self._screener_cache_ttl:
-            # ИСПРАВЛЕНО: правильный порядок распаковки (время, затем список)
             fetch_time, assets = cached
             from_cache = True
         else:
@@ -395,7 +416,11 @@ class TelegramHandlers:
     async def _handle_current_prices(self, update: Update):
         query = update.callback_query
         await query.answer()
-        await query.edit_message_text("⏳ Загружаю цены...")
+        try:
+            await query.edit_message_text("⏳ Загружаю цены...")
+        except Exception:
+            pass
+            
         assets = self.alerts_manager.get_all_alerts()
         if not assets:
             await query.edit_message_text("📋 Пусто.", reply_markup=keyboards.main_menu_keyboard())
@@ -407,7 +432,11 @@ class TelegramHandlers:
             ticker = self.bybit_client.get_ticker(symbol, category)
             text += f"🪙 <b>{symbol}</b>: <code>{ticker.price:,.4f}</code> $\n" if ticker else f"🪙 <b>{symbol}</b>: ❌\n"
         
-        await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
+        try:
+            await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
+        except Exception as e:
+            if "Message is not modified" not in str(e):
+                logger.error(f"Ошибка в _handle_current_prices: {e}")
 
     async def _show_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         assets = self.alerts_manager.get_all_alerts()
@@ -424,10 +453,16 @@ class TelegramHandlers:
                     text += f"   • {alert.price:,.4f} {dir_text.get(alert.direction, '')}{note}\n"
                 text += "\n"
                 
-        if update.callback_query:
-            await update.callback_query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboard)
-        else:
-            await update.message.reply_text(text, parse_mode='HTML', reply_markup=keyboard)
+        try:
+            if update.callback_query:
+                await update.callback_query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboard)
+            else:
+                await update.message.reply_text(text, parse_mode='HTML', reply_markup=keyboard)
+        except Exception as e:
+            if "Message is not modified" not in str(e):
+                logger.error(f"Ошибка в _show_list: {e}")
+            if update.callback_query:
+                await update.callback_query.answer()
 
     async def _show_help(self, update: Update):
         text = (
@@ -436,23 +471,22 @@ class TelegramHandlers:
             "⚡ <b>Алерт:</b> <code>TICKER PRICE DIR [NOTE]</code>\n"
             "Пример: <code>BTCUSDT 85000 up пробой</code>"
         )
-        if update.callback_query:
-            await update.callback_query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
-        else:
-            await update.message.reply_text(text, parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
+        try:
+            if update.callback_query:
+                await update.callback_query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
+            else:
+                await update.message.reply_text(text, parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
+        except Exception as e:
+            if "Message is not modified" not in str(e):
+                logger.error(f"Ошибка в _show_help: {e}")
+            if update.callback_query:
+                await update.callback_query.answer()
 
     def _generate_export_file(self, tickers: List[str]) -> Optional[str]:
         """
         Генерирует CSV файл с данными свечей для списка тикеров
-        
-        Args:
-            tickers: Список тикеров (например, ['BTCUSDT', 'ETHUSDT'])
-            
-        Returns:
-            Путь к созданному файлу или None при ошибке
         """
         try:
-            # Создаём файл во временной папке
             data_dir = Path(__file__).parent.parent.parent / "data" / "exports"
             data_dir.mkdir(parents=True, exist_ok=True)
             
@@ -461,22 +495,18 @@ class TelegramHandlers:
             
             with open(filepath, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
-                # Заголовок
                 writer.writerow(['Ticker', 'Timeframe', 'Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'RSI'])
                 
                 for ticker in tickers:
-                    # Получаем данные для 3 таймфреймов
                     for tf, tf_name in [('15', '15m'), ('60', '1H'), ('240', '4H')]:
                         try:
                             klines = self.bybit_client.get_klines(ticker, 'linear', tf, 150)
                             if not klines:
                                 continue
                             
-                            # Извлекаем цены закрытия для RSI
                             closes = [float(k[4]) for k in klines]
                             rsi_values = calculate_rsi(closes, period=14)
                             
-                            # Записываем свечи (от старых к новым)
                             for i, k in enumerate(reversed(klines)):
                                 timestamp_ms = int(k[0])
                                 dt = datetime.fromtimestamp(timestamp_ms / 1000)
@@ -488,7 +518,6 @@ class TelegramHandlers:
                                 close = float(k[4])
                                 volume = float(k[5])
                                 
-                                # RSI (берём соответствующее значение)
                                 rsi_idx = len(klines) - 1 - i
                                 rsi = rsi_values[rsi_idx] if rsi_idx < len(rsi_values) else None
                                 rsi_str = f"{rsi:.1f}" if rsi is not None else "N/A"
