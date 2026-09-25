@@ -15,6 +15,7 @@ from telegram.ext import ContextTypes
 from src.core.alerts import AlertsManager
 from src.api.bybit_client import BybitClient
 from src.telegram import keyboards
+from src.utils.data_exporter import DataExporter  # <-- ДОБАВИТЬ
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,39 @@ class TelegramHandlers:
     async def help_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update): return
         await self._show_help(update)
+
+    async def data_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /data SYMBOL"""
+        if not self._is_allowed(update): return
+        
+        if not context.args or len(context.args) == 0:
+            await update.message.reply_text(
+                "❌ Укажите символ\n\nПример: <code>/data BTCUSDT</code>",
+                parse_mode='HTML'
+            )
+            return
+        
+        symbol = context.args[0].upper()
+        
+        if not self.data_exporter.can_export(symbol):
+            await update.message.reply_text(
+                f"⏳ Подождите {self.data_exporter._export_cooldown} секунд перед следующим запросом"
+            )
+            return
+        
+        await update.message.reply_text(f"⏳ Выгружаю данные {symbol}...")
+        filepath = self.data_exporter.export_symbol_data(symbol, "linear")
+        
+        if filepath and os.path.exists(filepath):
+            filename = os.path.basename(filepath)
+            with open(filepath, 'rb') as f:
+                await update.message.reply_document(
+                    document=InputFile(f, filename=filename),
+                    caption=f"✅ {symbol} данные выгружены\n15m: 150 свечей\n1H: 100 свечей\n4H: 70 свечей"
+                )
+            os.remove(filepath)  # Очищаем временный файл
+        else:
+            await update.message.reply_text("❌ Не удалось получить данные. Попробуйте позже.")
 
     # ==================== ТЕКСТОВЫЕ СООБЩЕНИЯ ====================
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
