@@ -136,14 +136,25 @@ class TelegramHandlers:
                     category = 'spot' if 'spot' in note.lower() or 'спот' in note.lower() else 'linear'
                     clean_note = note.replace('spot', '').replace('спот', '').strip()
                     
-                    success = self.alerts_manager.add_alert(symbol, price, direction, category, clean_note)
+                    success, replaced = self.alerts_manager.add_alert(symbol, price, direction, category, clean_note)
                     dir_text = {"up": "снизу вверх 🟢", "down": "сверху вниз 🔴", "any": "любое ⚪️"}
                     note_display = f"\n📝 Сетап: <code>{clean_note}</code>" if clean_note else ""
-                    
+
                     if success:
-                        await update.message.reply_text(f"✅ <b>Добавлено:</b>\n🪙 {symbol}\n💰 {price:,.2f}\n🎯 {dir_text[direction]}{note_display}", parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
+                        if replaced:
+                            await update.message.reply_text(
+                                f"🔄 <b>Заменено:</b>\n🪙 {symbol}\n💰 {price:,.2f}\n🎯 {dir_text[direction]}{note_display}", 
+                                parse_mode='HTML', 
+                                reply_markup=keyboards.main_menu_keyboard()
+                            )
+                        else:
+                            await update.message.reply_text(
+                                f"✅ <b>Добавлено:</b>\n {symbol}\n💰 {price:,.2f}\n🎯 {dir_text[direction]}{note_display}", 
+                                parse_mode='HTML', 
+                                reply_markup=keyboards.main_menu_keyboard()
+                            )
                     else:
-                        await update.message.reply_text("⚠️ Уже существует", reply_markup=keyboards.main_menu_keyboard())
+                        await update.message.reply_text("❌ Ошибка направления", reply_markup=keyboards.main_menu_keyboard())
                     return
             except ValueError:
                 pass
@@ -153,6 +164,7 @@ class TelegramHandlers:
     async def _process_bulk_add(self, update: Update, lines: list[str]):
         success_count = fail_count = 0
         failed_details = []
+        replaced_count = 0
         for line in lines:
             if line.startswith('#') or line.startswith('//'): continue
             parts = line.split(maxsplit=3)
@@ -165,17 +177,22 @@ class TelegramHandlers:
                     category = 'spot' if 'spot' in note.lower() or 'спот' in note.lower() else 'linear'
                     clean_note = note.replace('spot', '').replace('спот', '').strip()
                     if direction in ['up', 'down', 'any'] and len(symbol) >= 4:
-                        if self.alerts_manager.add_alert(symbol, price, direction, category, clean_note): success_count += 1
+                        success, replaced = self.alerts_manager.add_alert(symbol, price, direction, category, clean_note)
+                        if success:
+                            success_count += 1
+                            if replaced:
+                                replaced_count += 1  # Добавим счетчик замен
                         else:
-                            fail_count += 1; failed_details.append(f"• {line} (существует)")
-                    else:
-                        fail_count += 1; failed_details.append(f"• {line} (ошибка)")
+                            fail_count += 1
+                            failed_details.append(f"• {line} (ошибка)")
                 except ValueError:
                     fail_count += 1; failed_details.append(f"• {line} (ошибка цены)")
             else:
                 fail_count += 1; failed_details.append(f"• {line} (формат)")
         
         report = f"📊 <b>Результат:</b>\n✅ Успешно: <b>{success_count}</b>\n"
+        if replaced_count > 0:
+            report += f"🔄 Заменено: <b>{replaced_count}</b>\n"
         if fail_count > 0:
             report += f"❌ Ошибок: <b>{fail_count}</b>\n" + "\n".join(failed_details[:5])
         else:
@@ -306,6 +323,7 @@ class TelegramHandlers:
                 await query.edit_message_text("✅ Файл отправлен", reply_markup=keyboards.main_menu_keyboard())
             else:
                 await query.edit_message_text("❌ Ошибка экспорта", reply_markup=keyboards.main_menu_keyboard())
+                
         elif data == "noop":
             await query.answer()
 
@@ -339,15 +357,10 @@ class TelegramHandlers:
         text = self._format_screener_simple(assets, fetch_time, from_cache)
         top_symbol = assets[0].symbol
         
-        await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.screener_add_alert_keyboard(top_symbol))
-
-        text = self._format_screener_simple(assets, fetch_time, from_cache)
-        top_symbol = assets[0].symbol
-        
-        # <-- ДОБАВИТЬ ЭТУ СТРОКУ: запоминаем активы для экспорта
+        # Запоминаем активы для экспорта
         self._last_screener_results = assets 
         
-        await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.screener_add_alert_keyboard(top_symbol))      
+        await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.screener_add_alert_keyboard(top_symbol))
     
     def _format_screener_simple(self, assets: List, fetch_time: float, from_cache: bool) -> str:
         text = "🔍 <b>ТОП ПО ДВИЖЕНИЮ ЦЕНЫ</b> (24ч)\n"

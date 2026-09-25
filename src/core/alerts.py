@@ -4,7 +4,7 @@
 
 import json
 import logging
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
@@ -16,14 +16,13 @@ class AlertRule:
     """Правило алерта для конкретного уровня"""
     price: float
     direction: str  # 'up', 'down', 'any'
-    setup_note: str = ""  # <-- НОВОЕ: Заметка о сетапе
+    setup_note: str = ""
     
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AlertRule':
-        # data.get обеспечивает совместимость со старыми файлами без setup_note
         return cls(
             price=data['price'], 
             direction=data['direction'], 
@@ -33,7 +32,6 @@ class AlertRule:
     def __eq__(self, other):
         if not isinstance(other, AlertRule):
             return False
-        # Уникальность определяется только ценой и направлением, заметка может меняться
         return self.price == other.price and self.direction == other.direction
 
 
@@ -94,26 +92,47 @@ class AlertsManager:
         price: float,
         direction: str,
         category: str = "linear",
-        setup_note: str = ""  # <-- НОВОЕ
-    ) -> bool:
+        setup_note: str = ""
+    ) -> Tuple[bool, bool]:
+        """
+        Добавляет алерт. Если алерт с такой ценой уже существует, заменяет его.
+        
+        Returns:
+            (success, replaced) - успешно ли добавлен и был ли заменен старый
+        """
         symbol = symbol.upper()
         if direction not in ['up', 'down', 'any']:
-            return False
+            return False, False
         
         new_rule = AlertRule(price=price, direction=direction, setup_note=setup_note.strip())
         
         for asset in self.assets:
             if asset.symbol == symbol:
-                if new_rule in asset.alerts:
-                    return False # Уже существует
+                # Проверяем, есть ли алерт с такой же ценой
+                existing_idx = None
+                for i, rule in enumerate(asset.alerts):
+                    if rule.price == price:
+                        existing_idx = i
+                        break
+                
+                if existing_idx is not None:
+                    # Заменяем старый алерт новым
+                    old_rule = asset.alerts[existing_idx]
+                    asset.alerts[existing_idx] = new_rule
+                    self.save()
+                    logger.info(f"🔄 Алерт {symbol} @ {price} заменен: {old_rule.direction} -> {direction}")
+                    return True, True
+                
+                # Если цены разные, просто добавляем
                 asset.alerts.append(new_rule)
                 self.save()
-                return True
+                return True, False
         
+        # Актив не найден, создаем новый
         new_asset = Asset(symbol=symbol, category=category, alerts=[new_rule])
         self.assets.append(new_asset)
         self.save()
-        return True
+        return True, False
     
     def remove_alert(self, symbol: str, price: float, direction: str) -> bool:
         symbol = symbol.upper()
@@ -133,8 +152,6 @@ class AlertsManager:
         """Удаляет ВСЕ алерты для указанного символа"""
         symbol = symbol.upper()
         initial_len = len(self.assets)
-        
-        # Оставляем только те активы, символ которых не совпадает
         self.assets = [a for a in self.assets if a.symbol != symbol]
         
         if len(self.assets) != initial_len:
@@ -144,3 +161,8 @@ class AlertsManager:
     
     def get_all_alerts(self) -> List[Asset]:
         return self.assets.copy()
+    
+    def clear_all(self):
+        """Очищает все алерты (для тестирования)"""
+        self.assets = []
+        self.save()
