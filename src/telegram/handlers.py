@@ -355,7 +355,6 @@ class TelegramHandlers:
         # ==================== КОНЕЦ БЛОКА ====================
 
         elif data == "export_screener":
-        elif data == "export_screener":
             if not self._last_screener_results:
                 await query.edit_message_text(
                     "⚠️ Сначала запустите скринер, чтобы были данные для выгрузки",
