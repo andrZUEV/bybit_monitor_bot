@@ -4,10 +4,7 @@
 
 import logging
 import time
-import os
-import csv
-from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from telegram.ext import ContextTypes
@@ -42,7 +39,7 @@ class TelegramHandlers:
         self._reset_state(update.effective_chat.id)
         total_alerts = sum(len(a.alerts) for a in self.alerts_manager.get_all_alerts())
         await update.message.reply_text(
-            "🤖 <b>Bybit Monitor Bot</b>\n\n"
+            "👋 <b>Bybit Monitor Bot</b>\n\n"
             "🔍 <b>Скринер:</b> ищите монеты с сильным движением!\n"
             "⚡ <b>Алерты:</b> получайте уведомления о пробоях.\n\n"
             f"📊 <b>Статус:</b>\n"
@@ -67,30 +64,6 @@ class TelegramHandlers:
         if not self._is_allowed(update): return
         await self._show_help(update)
 
-    async def data_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /data SYMBOL"""
-        if not self._is_allowed(update): return
-        
-        if not context.args or len(context.args) == 0:
-            await update.message.reply_text("❌ Укажите символ\n\nПример: <code>/data BTCUSDT</code>", parse_mode='HTML')
-            return
-        
-        symbol = context.args[0].upper()
-        await update.message.reply_text(f"⏳ Выгружаю данные {symbol}...")
-        
-        filepath = self._generate_export_file([symbol])
-        
-        if filepath and os.path.exists(filepath):
-            filename = os.path.basename(filepath)
-            with open(filepath, 'rb') as f:
-                await update.message.reply_document(
-                    document=InputFile(f, filename=filename),
-                    caption=f"✅ {symbol} данные выгружены\n15m: 150 свечей\n1H: 100 свечей\n4H: 70 свечей"
-                )
-            os.remove(filepath)
-        else:
-            await update.message.reply_text("❌ Не удалось получить данные. Попробуйте позже.")
-
     # ==================== ТЕКСТОВЫЕ СООБЩЕНИЯ ====================
     async def handle_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update): return
@@ -99,38 +72,6 @@ class TelegramHandlers:
         text = update.message.text.strip()
         state = self.user_state.get(chat_id, {})
         
-        # 1. Обработка ручного ввода тикеров для экспорта
-        if state.get('step') == 'waiting_for_export_tickers':
-            tickers_input = text.upper().split()
-            valid_tickers = [t for t in tickers_input if t.endswith('USDT') and len(t) >= 6]
-            
-            if not valid_tickers:
-                await update.message.reply_text(
-                    "❌ Неверный формат. Введите тикеры, заканчивающиеся на USDT, через пробел.\n"
-                    "Например: <code>BTCUSDT ETHUSDT</code>",
-                    parse_mode='HTML',
-                    reply_markup=keyboards.cancel_keyboard()
-                )
-                return
-            
-            await update.message.reply_text(f"⏳ Генерирую файл для {len(valid_tickers)} тикеров...")
-            filepath = self._generate_export_file(valid_tickers)
-            
-            if filepath and os.path.exists(filepath):
-                filename = os.path.basename(filepath)
-                with open(filepath, 'rb') as f:
-                    await update.message.reply_document(
-                        document=InputFile(f, filename=filename),
-                        caption=f"✅ Данные выгружены для: {', '.join(valid_tickers)}"
-                    )
-                os.remove(filepath)
-            else:
-                await update.message.reply_text("❌ Ошибка при генерации файла.")
-            
-            self._reset_state(chat_id)
-            return
-
-        # 2. Обработка ввода тикера для добавления алерта
         if state.get('step') == 'waiting_symbol':
             symbol = text.upper().replace(' ', '')
             if len(symbol) < 4 or not symbol.isalpha():
@@ -151,13 +92,11 @@ class TelegramHandlers:
             await update.message.reply_text(f"✅ Цена: <code>{price:,.2f}</code>\nВыберите направление:", parse_mode='HTML', reply_markup=keyboards.direction_keyboard())
             return
 
-        # 3. Массовое добавление алертов
         lines = [line.strip() for line in text.split('\n') if line.strip()]
         if len(lines) > 1:
             await self._process_bulk_add(update, lines)
             return
             
-        # 4. Одиночное добавление алерта
         parts = text.split(maxsplit=3)
         if len(parts) >= 3:
             symbol = parts[0].upper()
@@ -202,17 +141,13 @@ class TelegramHandlers:
                         if self.alerts_manager.add_alert(symbol, price, direction, category, clean_note):
                             success_count += 1
                         else:
-                            fail_count += 1
-                            failed_details.append(f"• {line} (уже существует)")
+                            fail_count += 1; failed_details.append(f"• {line} (ошибка)")
                     else:
-                        fail_count += 1
-                        failed_details.append(f"• {line} (ошибка направления)")
+                        fail_count += 1; failed_details.append(f"• {line} (ошибка)")
                 except ValueError:
-                    fail_count += 1
-                    failed_details.append(f"• {line} (ошибка цены)")
+                    fail_count += 1; failed_details.append(f"• {line} (ошибка цены)")
             else:
-                fail_count += 1
-                failed_details.append(f"• {line} (неверный формат)")
+                fail_count += 1; failed_details.append(f"• {line} (формат)")
         
         report = f"📊 <b>Результат:</b>\n✅ Успешно: <b>{success_count}</b>\n"
         if fail_count > 0:
@@ -239,48 +174,6 @@ class TelegramHandlers:
         elif data == "menu_add":
             self.user_state[chat_id] = {'step': 'waiting_symbol'}
             await query.edit_message_text("➕ <b>Алерт</b>\nВведите тикер:", parse_mode='HTML', reply_markup=keyboards.cancel_keyboard())
-            
-        # --- ЛОГИКА ЭКСПОРТА (ИСПРАВЛЕНА) ---
-        elif data == "menu_export":
-            await query.edit_message_text(
-                "📊 <b>Выгрузка данных</b>\n\nВыберите способ выгрузки:",
-                parse_mode='HTML',
-                reply_markup=keyboards.export_options_keyboard()
-            )
-            
-        elif data == "export_tracked":
-            assets = self.alerts_manager.get_all_alerts()
-            if not assets:
-                await query.edit_message_text("📋 Нет отслеживаемых активов. Добавьте алерты сначала.", reply_markup=keyboards.main_menu_keyboard())
-                return
-            
-            symbols = list(set(a.symbol for a in assets))
-            await query.edit_message_text(f"⏳ Выгружаю данные для {len(symbols)} активов...")
-            
-            filepath = self._generate_export_file(symbols)
-            
-            if filepath and os.path.exists(filepath):
-                filename = os.path.basename(filepath)
-                with open(filepath, 'rb') as f:
-                    await update.callback_query.message.reply_document(
-                        document=InputFile(f, filename=filename),
-                        caption=f"✅ Данные выгружены\nАктивов: {len(symbols)}\n📋 {', '.join(symbols)}"
-                    )
-                os.remove(filepath)
-                await query.edit_message_text("✅ Файл отправлен!", reply_markup=keyboards.main_menu_keyboard())
-            else:
-                await query.edit_message_text("❌ Ошибка экспорта", reply_markup=keyboards.main_menu_keyboard())
-                
-        elif data == "export_manual":
-            self.user_state[chat_id] = {'step': 'waiting_for_export_tickers'}
-            await query.edit_message_text(
-                "✏️ <b>Ручная выгрузка</b>\n\n"
-                "Введите тикеры через пробел:\n"
-                "Например: <code>BTCUSDT ETHUSDT SOLUSDT</code>",
-                parse_mode='HTML',
-                reply_markup=keyboards.cancel_keyboard()
-            )
-        # --- КОНЕЦ ЛОГИКИ ЭКСПОРТА ---
             
         elif data == "menu_screener":
             await self._run_screener_simple(update, chat_id)
@@ -340,68 +233,59 @@ class TelegramHandlers:
         elif data == "noop":
             await query.answer()
 
-    # ==================== ЭКСПОРТ ДАННЫХ ====================
-    def _generate_export_file(self, tickers: List[str]) -> Optional[str]:
-        filename = f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        filepath = os.path.join(os.path.dirname(__file__), '..', '..', 'data', filename)
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        
+    # ==================== СКРИНЕР ====================
+    async def _run_screener_simple(self, update: Update, chat_id: int):
+        query = update.callback_query
         try:
-            with open(filepath, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow(['Ticker', 'Timeframe', 'Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'RSI'])
-                
-                for ticker in tickers:
-                    for tf, tf_name in [('15', '15m'), ('60', '1H'), ('240', '4H')]:
-                        klines = self.bybit_client.get_klines(ticker, 'linear', tf, 150)
-                        if not klines:
-                            continue
-                        
-                        closes = [float(k[4]) for k in klines]
-                        rsi_values = self._calculate_rsi_list(closes, 14)
-                        
-                        for i, k in enumerate(klines):
-                            time_str = datetime.fromtimestamp(int(k[0]) / 1000).strftime('%Y-%m-%d %H:%M')
-                            rsi = f"{rsi_values[i]:.2f}" if rsi_values[i] is not None else "N/A"
-                            writer.writerow([ticker, tf_name, time_str, k[1], k[2], k[3], k[4], k[5], rsi])
-            return filepath
-        except Exception as e:
-            logger.error(f"Error generating export file: {e}")
-            return None
-
-    def _calculate_rsi_list(self, closes: List[float], period: int = 14) -> List[Optional[float]]:
-        closes_rev = list(reversed(closes))
-        if len(closes_rev) < period + 1:
-            return [None] * len(closes)
+            await query.edit_message_text("⏳ <b>Анализирую рынок...</b>", parse_mode='HTML')
+        except Exception:
+            pass
         
-        changes = [closes_rev[i] - closes_rev[i - 1] for i in range(1, len(closes_rev))]
-        gains = [max(c, 0) for c in changes]
-        losses = [max(-c, 0) for c in changes]
+        cache_key = "screener_simple"
+        cached = self._screener_cache.get(cache_key)
         
-        avg_gain = sum(gains[:period]) / period
-        avg_loss = sum(losses[:period]) / period
-        
-        rsi_values_rev = [None] * period
-        
-        if avg_loss == 0:
-            rsi_values_rev.append(100.0)
+        if cached and (time.time() - cached[0]) < self._screener_cache_ttl:
+            # ИСПРАВЛЕНО: правильный порядок распаковки (время, затем список)
+            fetch_time, assets = cached
+            from_cache = True
         else:
-            rs = avg_gain / avg_loss
-            rsi_values_rev.append(100 - (100 / (1 + rs)))
+            assets = self.bybit_client.get_screener_data(
+                category="linear", sort_by="volume_desc", min_volume_usd=1_000_000, min_change_abs=3.0, limit=20
+            )
+            if assets:
+                assets.sort(key=lambda x: abs(x.price_change_24h), reverse=True)
             
-        for i in range(period, len(changes)):
-            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-            
-            if avg_loss == 0:
-                rsi_values_rev.append(100.0)
-            else:
-                rs = avg_gain / avg_loss
-                rsi_values_rev.append(100 - (100 / (1 + rs)))
-                
-        return list(reversed(rsi_values_rev))
+            fetch_time = time.time()
+            self._screener_cache[cache_key] = (fetch_time, assets)
+            from_cache = False
+        
+        if not assets:
+            await query.edit_message_text("❌ <b>Ничего не найдено</b>\n\nПопробуйте позже или уменьшите фильтры.", parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
+            return
+        
+        text = self._format_screener_simple(assets, fetch_time, from_cache)
+        top_symbol = assets[0].symbol
+        
+        await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.screener_add_alert_keyboard(top_symbol))
+    
+    def _format_screener_simple(self, assets: List, fetch_time: float, from_cache: bool) -> str:
+        text = "🔍 <b>ТОП ПО ДВИЖЕНИЮ ЦЕНЫ</b> (24ч)\n"
+        text += "<i>Отсортировано по абсолютному изменению (не важно + или -)</i>\n"
+        text += "<i>Фильтры: >= 3% движения, >= 1M$ объема</i>\n\n"
+        text += "━" * 30 + "\n\n"
+        
+        for i, asset in enumerate(assets[:15], 1):
+            change_emoji = "🚀" if asset.price_change_24h > 5 else "💥" if asset.price_change_24h < -5 else "🟢" if asset.price_change_24h > 0 else "🔴"
+            vol_str = f"${asset.volume_24h/1_000_000:.2f}M"
+            price_str = f"{asset.price:,.2f}" if asset.price >= 100 else f"{asset.price:,.4f}" if asset.price >= 1 else f"{asset.price:,.6f}"
+            text += f"<b>{i:2d}.</b> <code>{asset.symbol}</code>\n"
+            text += f"    💰 <b>{price_str}</b> $ | {change_emoji} <b>{asset.price_change_24h:+.2f}%</b>\n"
+            text += f"    📊 Объем: <b>{vol_str}</b>\n\n"
+        
+        text += "━" * 30 + "\n"
+        text += f"<i>{'📥 Из кэша' if from_cache else '🔄 Свежие данные'} ({int(time.time() - fetch_time)}с назад)</i>"
+        return text
 
-    # ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
     async def _handle_current_prices(self, update: Update):
         query = update.callback_query
         await query.answer()
@@ -443,7 +327,6 @@ class TelegramHandlers:
         text = (
             "ℹ️ <b>Справка</b>\n\n"
             "🔍 <b>Скринер:</b> показывает топ монет по движению цены за 24ч\n"
-            "📊 <b>Экспорт:</b> выгружает CSV с данными (15m, 1H, 4H) и RSI\n"
             "⚡ <b>Алерт:</b> <code>TICKER PRICE DIR [NOTE]</code>\n"
             "Пример: <code>BTCUSDT 85000 up пробой</code>"
         )
@@ -451,41 +334,3 @@ class TelegramHandlers:
             await update.callback_query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
         else:
             await update.message.reply_text(text, parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
-
-    async def _run_screener_simple(self, update: Update, chat_id: int):
-        query = update.callback_query
-        try:
-            await query.edit_message_text("⏳ <b>Анализирую рынок...</b>", parse_mode='HTML')
-        except Exception:
-            pass
-        
-        cache_key = "screener_simple"
-        cached = self._screener_cache.get(cache_key)
-        
-        if cached and (time.time() - cached[0]) < self._screener_cache_ttl:
-            assets, fetch_time = cached
-            from_cache = True
-        else:
-            assets = self.bybit_client.get_screener_data(
-                category="linear", sort_by="volume_desc", min_volume_usd=1_000_000, min_change_abs=3.0, limit=20
-            )
-            assets.sort(key=lambda x: abs(x.price_change_24h), reverse=True)
-            fetch_time = time.time()
-            self._screener_cache[cache_key] = (fetch_time, assets)
-            from_cache = False
-        
-        if not assets:
-            await query.edit_message_text("❌ <b>Ничего не найдено</b>", parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
-            return
-        
-        text = "🔍 <b>ТОП ПО ДВИЖЕНИЮ ЦЕНЫ</b> (24ч)\n"
-        text += "<i>Отсортировано по абсолютному изменению</i>\n\n"
-        for i, asset in enumerate(assets[:15], 1):
-            change_emoji = "🚀" if asset.price_change_24h > 5 else "💥" if asset.price_change_24h < -5 else "🟢" if asset.price_change_24h > 0 else "🔴"
-            vol_str = f"${asset.volume_24h/1_000_000:.2f}M"
-            price_str = f"{asset.price:,.2f}" if asset.price >= 100 else f"{asset.price:,.4f}" if asset.price >= 1 else f"{asset.price:,.6f}"
-            text += f"<b>{i:2d}.</b> <code>{asset.symbol}</code>\n"
-            text += f"    💰 <b>{price_str}</b> $ | {change_emoji} <b>{asset.price_change_24h:+.2f}%</b>\n"
-            text += f"    📊 Объем: <b>{vol_str}</b>\n\n"
-        
-        await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.screener_add_alert_keyboard(assets[0].symbol))
