@@ -57,20 +57,14 @@ def alerts_list_keyboard(assets: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
-def screener_add_alert_keyboard(symbol: str, symbols_list: List[str] = None) -> InlineKeyboardMarkup:
+def screener_add_alert_keyboard(symbol: str) -> InlineKeyboardMarkup:
     """Кнопка для быстрого добавления алерта на актив из скринера"""
     keyboard = [
         [InlineKeyboardButton(f"➕ Алерт на {symbol}", callback_data=f"scr_add_{symbol}")],
         [InlineKeyboardButton("🔄 Обновить", callback_data="scr_refresh")],
+        [InlineKeyboardButton("📊 Выгрузить данные", callback_data="export_screener")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
     ]
-    
-    # Если передан список символов, добавляем кнопку выгрузки
-    if symbols_list and len(symbols_list) > 0:
-        keyboard.append([
-            InlineKeyboardButton("📊 Выгрузить данные скринера", callback_data="export_screener")
-        ])
-    
-    keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")])
     return InlineKeyboardMarkup(keyboard)
 
 def reply_keyboard() -> ReplyKeyboardMarkup:
