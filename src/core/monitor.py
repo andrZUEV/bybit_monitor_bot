@@ -13,7 +13,7 @@ from enum import Enum
 # Добавляем корень проекта в путь
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
-from src.api.bybit_client import BybitClient, TickerData
+from src.api.bybit_client import BybitClient
 from src.core.alerts import AlertsManager, Asset, AlertRule
 from src.core.cooldown import CooldownManager
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -50,6 +50,7 @@ class Monitor:
         self,
         alerts_manager: AlertsManager,
         on_alert_callback: Callable[[AlertEvent], None],
+        bybit_client: Optional[Any] = None,  # <-- ДОБАВЛЕНО
         poll_interval: float = 4.0,
         volume_threshold: float = 5.0,
         volume_cooldown: float = 300.0,
@@ -69,8 +70,7 @@ class Monitor:
         self.candle_periods = candle_periods
         self.candle_volume_multiplier = candle_volume_multiplier
         
-        # Если клиент не передан, создаем новый
-        from src.api.bybit_client import BybitClient
+        # Используем переданный клиент или создаем новый (для обратной совместимости)
         self.client = bybit_client or BybitClient()
         
         self.cooldown_manager = CooldownManager(cooldown_minutes=alert_cooldown_minutes)
@@ -78,7 +78,7 @@ class Monitor:
         self._running = False
         self._poll_count = 0
     
-    def _check_price_cross(self, asset: Asset, ticker: TickerData, state: AssetState):
+    def _check_price_cross(self, asset: Asset, ticker: Any, state: AssetState):
         if state.prev_price is None:
             return
         
@@ -148,7 +148,7 @@ class Monitor:
                             setup_note=rule.setup_note
                         )
                         
-                        # ИСПРАВЛЕНО: убрано :, из target, чтобы float() в handlers.py не падал с ValueError
+                        # Убрано :, из target, чтобы float() в handlers.py не падал с ValueError
                         alert_keyboard = InlineKeyboardMarkup([
                             [InlineKeyboardButton(f"🗑 Удалить {asset.symbol} @ {target}", 
                                                   callback_data=f"del|{asset.symbol}|{target}|{direction}")],
