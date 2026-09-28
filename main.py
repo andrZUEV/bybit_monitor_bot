@@ -103,7 +103,7 @@ def main():
     # 3.1. Очистка старых файлов экспорта
     exporter = DataExporter(telegram_bot.bybit_client)
     exporter.cleanup_old_files(max_age_hours=1)
-    logger.info("🗑 Старые файлы экспорта удалены")
+    logger.info(" Старые файлы экспорта удалены")
 
     # 4. Инициализация Монитора
     monitor = Monitor(
@@ -123,11 +123,8 @@ def main():
     # 5. Запуск компонентов
     logger.info("🔄 Запуск фоновых служб...")
     
-    # Запускаем МОНИТОР в отдельном потоке (неблокирующий)
-    monitor_thread = threading.Thread(target=monitor.start, daemon=True)
-    monitor_thread.start()
-    logger.info("📡 Монитор запущен в фоновом потоке")
-    
+    # Запускаем бота в фоновом потоке (неблокирующий)
+    telegram_bot.start_async()
     time.sleep(1)
     
     # Отправляем приветственное сообщение в Telegram С КНОПКАМИ
@@ -144,10 +141,10 @@ def main():
     
     telegram_bot.send_alert(welcome_msg, reply_markup=main_menu_keyboard())
 
-    # 6. Основной цикл — Telegram бот (блокирующий)
+    # 6. Основной цикл (БЛОКИРУЮЩИЙ) — Monitor в основном потоке
     try:
-        logger.info("▶️ Telegram бот запущен. Нажмите Ctrl+C для остановки.")
-        telegram_bot.start_async()  # Это должно быть блокирующим вызовом
+        logger.info("▶️ Мониторинг начался. Нажмите Ctrl+C для остановки.")
+        monitor.start()  # <-- ЭТО БЛОКИРУЮЩИЙ ВЫЗОВ
         
     except KeyboardInterrupt:
         logger.info("🛑 Получен сигнал остановки (Ctrl+C)")
@@ -155,7 +152,7 @@ def main():
         logger.critical(f"💥 Критическая ошибка: {e}", exc_info=True)
     finally:
         # 7. Корректное завершение работы
-        logger.info(" Завершение работы и очистка ресурсов...")
+        logger.info("🧹 Завершение работы и очистка ресурсов...")
         monitor.stop()
         telegram_bot.stop()
         
