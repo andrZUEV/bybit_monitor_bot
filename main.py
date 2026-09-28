@@ -17,6 +17,8 @@ from src.telegram.bot import TelegramBot
 from src.core.monitor import Monitor, AlertEvent
 from src.utils.data_exporter import DataExporter
 
+import threading
+
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
 
 def setup_logging():
@@ -84,35 +86,29 @@ def main():
     
     logger.info("✅ Конфигурация загружена успешно")
 
-    # 2. Инициализация ЕДИНОГО клиента Bybit
-    from src.api.bybit_client import BybitClient
-    bybit_client = BybitClient()
-
-    # 3. Инициализация менеджера алертов
+    # 2. Инициализация менеджера алертов
     alerts_manager = AlertsManager(str(Config.ALERTS_FILE))
     total_alerts = sum(len(asset.alerts) for asset in alerts_manager.get_all_alerts())
     logger.info(f"📋 Загружено алертов: {total_alerts}")
 
-    # 4. Инициализация Telegram бота (передаем client)
+    # 3. Инициализация Telegram бота
     global telegram_bot
     telegram_bot = TelegramBot(
         token=Config.TELEGRAM_BOT_TOKEN,
         allowed_chat_id=Config.TELEGRAM_CHAT_ID,
-        alerts_manager=alerts_manager,
-        bybit_client=bybit_client  # <-- ПЕРЕДАЕМ
+        alerts_manager=alerts_manager
     )
     logger.info("✅ Telegram бот инициализирован")
     
-    # 4.1. Очистка старых файлов экспорта
+    # 3.1. Очистка старых файлов экспорта
     exporter = DataExporter(telegram_bot.bybit_client)
     exporter.cleanup_old_files(max_age_hours=1)
     logger.info("🗑 Старые файлы экспорта удалены")
 
-    # 5. Инициализация Монитора (передаем client)
+    # 4. Инициализация Монитора
     monitor = Monitor(
         alerts_manager=alerts_manager,
         on_alert_callback=on_alert_callback,
-        bybit_client=bybit_client,  # <-- ПЕРЕДАЕМ
         poll_interval=Config.POLL_INTERVAL,
         volume_threshold=Config.VOLUME_THRESHOLD,
         volume_cooldown=Config.VOLUME_COOLDOWN,
@@ -124,11 +120,14 @@ def main():
     )
     logger.info("✅ Монитор инициализирован")
 
-    # 6. Запуск компонентов
+    # 5. Запуск компонентов
     logger.info("🔄 Запуск фоновых служб...")
     
-    # Запускаем бота в отдельном потоке (неблокирующий)
-    telegram_bot.start_async()
+    # Запускаем МОНИТОР в отдельном потоке (неблокирующий)
+    monitor_thread = threading.Thread(target=monitor.start, daemon=True)
+    monitor_thread.start()
+    logger.info("📡 Монитор запущен в фоновом потоке")
+    
     time.sleep(1)
     
     # Отправляем приветственное сообщение в Telegram С КНОПКАМИ
@@ -136,7 +135,7 @@ def main():
     
     welcome_msg = (
         "✅ <b>Bybit Monitor Bot запущен!</b>\n\n"
-        f"📊 Отслеживается алертов: <b>{total_alerts}</b>\n"
+        f" Отслеживается алертов: <b>{total_alerts}</b>\n"
         f"⏱ Интервал опроса: <b>{Config.POLL_INTERVAL} сек</b>\n"
         f"📈 Порог объема: <b>{Config.VOLUME_THRESHOLD}%</b>\n"
         f"⏳ Кулдаун алертов: <b>{Config.ALERT_COOLDOWN_MINUTES} мин</b>\n\n"
@@ -145,10 +144,10 @@ def main():
     
     telegram_bot.send_alert(welcome_msg, reply_markup=main_menu_keyboard())
 
-    # 7. Основной цикл (блокирующий)
+    # 6. Основной цикл — Telegram бот (блокирующий)
     try:
-        logger.info("▶️ Мониторинг начался. Нажмите Ctrl+C для остановки.")
-        monitor.start()
+        logger.info("▶️ Telegram бот запущен. Нажмите Ctrl+C для остановки.")
+        telegram_bot.start_async()  # Это должно быть блокирующим вызовом
         
     except KeyboardInterrupt:
         logger.info("🛑 Получен сигнал остановки (Ctrl+C)")
@@ -156,7 +155,7 @@ def main():
         logger.critical(f"💥 Критическая ошибка: {e}", exc_info=True)
     finally:
         # 7. Корректное завершение работы
-        logger.info("🧹 Завершение работы и очистка ресурсов...")
+        logger.info(" Завершение работы и очистка ресурсов...")
         monitor.stop()
         telegram_bot.stop()
         
