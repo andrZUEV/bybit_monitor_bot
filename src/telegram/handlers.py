@@ -396,9 +396,12 @@ class TelegramHandlers:
             for asset in assets:
                 text += f"🪙 <b>{asset.symbol}</b>\n"
                 for alert in asset.alerts:
-                    note = f" | 📝 <i>{alert.setup_note}</i>" if alert.setup_note else ""
-                    text += f"   • {alert.price:,.4f} {dir_text.get(alert.direction, '')}{note}\n"
+                    # Экранируем HTML в заметке
+                    note_escaped = alert.setup_note.replace('<', '&lt;').replace('>', '&gt;') if alert.setup_note else ""
+                    note_display = f" | 📝 <i>{note_escaped}</i>" if note_escaped else ""
+                    text += f"   • {alert.price:,.4f} {dir_text.get(alert.direction, '')}{note_display}\n"
                 text += "\n"
+                
         try:
             if update.callback_query:
                 await update.callback_query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboard)
