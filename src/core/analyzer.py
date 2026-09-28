@@ -7,6 +7,8 @@ import time
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 
+from src.utils.indicators import calculate_rsi
+
 logger = logging.getLogger(__name__)
 
 

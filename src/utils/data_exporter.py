@@ -13,6 +13,7 @@ from typing import List, Optional, Dict
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from src.api.bybit_client import BybitClient
+from src.utils.indicators import calculate_rsi
 
 logger = logging.getLogger(__name__)
 

@@ -16,6 +16,7 @@ from telegram.ext import ContextTypes
 from src.core.alerts import AlertsManager
 from src.api.bybit_client import BybitClient
 from src.telegram import keyboards
+from src.utils.indicators import calculate_rsi
 
 logger = logging.getLogger(__name__)
 
