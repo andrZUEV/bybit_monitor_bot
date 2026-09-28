@@ -79,18 +79,18 @@ def load_config():
     load_dotenv()
     
     config = {
-        'TELEGRAM_TOKEN': os.getenv('TELEGRAM_TOKEN'),
-        'ADMIN_CHAT_ID': os.getenv('ADMIN_CHAT_ID'),
+        'TELEGRAM_TOKEN': os.getenv('TELEGRAM_BOT_TOKEN'),  # <-- было TELEGRAM_TOKEN
+        'ADMIN_CHAT_ID': os.getenv('TELEGRAM_CHAT_ID'),     # <-- было ADMIN_CHAT_ID
         'ALERT_COOLDOWN_MINUTES': int(os.getenv('ALERT_COOLDOWN_MINUTES', '25')),
         'POLL_INTERVAL': float(os.getenv('POLL_INTERVAL', '4.0')),
         'PRICE_RESET_THRESHOLD': float(os.getenv('PRICE_RESET_THRESHOLD', '0.005')),
     }
     
     if not config['TELEGRAM_TOKEN']:
-        raise ValueError("❌ TELEGRAM_TOKEN не задан в .env")
+        raise ValueError("❌ TELEGRAM_BOT_TOKEN не задан в .env")
     
     if not config['ADMIN_CHAT_ID']:
-        raise ValueError("❌ ADMIN_CHAT_ID не задан в .env")
+        raise ValueError("❌ TELEGRAM_CHAT_ID не задан в .env")
     
     config['ADMIN_CHAT_ID'] = int(config['ADMIN_CHAT_ID'])
     return config
