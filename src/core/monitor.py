@@ -139,8 +139,10 @@ class Monitor:
                         
                         # <-- ИСПРАВЛЕНО: Создаем клавиатуру прямо здесь
                         alert_keyboard = InlineKeyboardMarkup([
-                            [InlineKeyboardButton(f"🗑 Удалить {asset.symbol} @ {target:,.2f}", 
-                                                  callback_data=f"del|{asset.symbol}|{target}|{direction}")],
+                            [InlineKeyboardButton(f" Удалить {asset.symbol} @ {target:,.2f}", 
+                                                callback_data=f"del|{asset.symbol}|{target}|{direction}")],
+                            [InlineKeyboardButton(f"📊 Выгрузить данные {asset.symbol}", 
+                                                callback_data=f"export_alert_{asset.symbol}")],
                             [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")]
                         ])
                         

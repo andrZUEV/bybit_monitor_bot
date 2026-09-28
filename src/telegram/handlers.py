@@ -354,30 +354,42 @@ class TelegramHandlers:
             )
         # ==================== КОНЕЦ БЛОКА ====================
 
-        elif data == "export_screener":
+                elif data == "export_screener":
             if not self._last_screener_results:
-                await query.edit_message_text(
-                    "⚠️ Сначала запустите скринер, чтобы были данные для выгрузки",
-                    reply_markup=keyboards.main_menu_keyboard()
-                )
+                await query.edit_message_text("⚠️ Сначала запустите скринер.", reply_markup=keyboards.main_menu_keyboard())
                 return
-            
             symbols = [asset.symbol for asset in self._last_screener_results]
-            await query.edit_message_text(f"⏳ Выгружаю данные для {len(symbols)} активов из скринера...")
-            
+            await query.edit_message_text(f" Выгружаю данные для {len(symbols)} активов из скринера...")
             filepath = self._generate_export_file(symbols)
-            
             if filepath and os.path.exists(filepath):
-                filename = os.path.basename(filepath)
                 with open(filepath, 'rb') as f:
                     await update.callback_query.message.reply_document(
-                        document=InputFile(f, filename=filename),
-                        caption=f"✅ Данные скринера выгружены\nАктивов: {len(symbols)}\n📋 {', '.join(symbols[:10])}{'...' if len(symbols) > 10 else ''}"
+                        document=InputFile(f, filename=os.path.basename(filepath)),
+                        caption=f"✅ Данные скринера выгружены\nАктивов: {len(symbols)}"
+                    )
+                os.remove(filepath)
+                await query.edit_message_text("✅ Файл отправлен!", reply_markup=keyboards.main_menu_keyboard())
+            else:
+                await query.edit_message_text(" Ошибка экспорта", reply_markup=keyboards.main_menu_keyboard())
+
+        # === НОВЫЙ ОБРАБОТЧИК: Выгрузка данных по активу из алерта ===
+        elif data.startswith("export_alert_"):
+            symbol = data.replace("export_alert_", "")
+            await query.edit_message_text(f"⏳ Выгружаю данные {symbol}...")
+            filepath = self._generate_export_file([symbol])
+            if filepath and os.path.exists(filepath):
+                with open(filepath, 'rb') as f:
+                    await update.callback_query.message.reply_document(
+                        document=InputFile(f, filename=os.path.basename(filepath)),
+                        caption=f"✅ Данные {symbol} выгружены\n15m: 150 свечей\n1H: 100 свечей\n4H: 70 свечей"
                     )
                 os.remove(filepath)
                 await query.edit_message_text("✅ Файл отправлен!", reply_markup=keyboards.main_menu_keyboard())
             else:
                 await query.edit_message_text("❌ Ошибка экспорта", reply_markup=keyboards.main_menu_keyboard())
+        # ================================================================
+        
+        
                 
         elif data.startswith("scr_add_"):
             symbol = data.replace("scr_add_", "")
