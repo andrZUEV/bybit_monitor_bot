@@ -20,13 +20,24 @@ from src.utils.data_exporter import DataExporter
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
 
 def setup_logging():
-    """Настраивает логирование в консоль и файл"""
+    """Настраивает логирование в консоль и файл с ротацией"""
+    from logging.handlers import RotatingFileHandler
+    
     log_format = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
     
+    # Создаём папку logs если её нет
+    Config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    
     handlers = [
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(Config.LOGS_DIR / "bot.log", encoding="utf-8")
+        # Ротация: 5 МБ × 3 backup = максимум 20 МБ логов
+        RotatingFileHandler(
+            filename=Config.LOGS_DIR / "bot.log",
+            maxBytes=5 * 1024 * 1024,  # 5 МБ
+            backupCount=3,
+            encoding="utf-8"
+        )
     ]
     
     logging.basicConfig(
