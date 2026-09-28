@@ -86,7 +86,7 @@ class Monitor:
         curr = ticker.price
         
         for rule in asset.alerts:
-            target = rule.price
+            target = float(rule.price)  # <-- ЯВНОЕ ПРЕОБРАЗОВАНИЕ В FLOAT
             direction = rule.direction
             alert_key = f"{target}_{direction}"
             

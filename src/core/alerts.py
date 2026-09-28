@@ -27,10 +27,10 @@ class AlertRule:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AlertRule':
         return cls(
-            price=data['price'], 
+            price=float(data['price']),  # <-- ЯВНОЕ ПРЕОБРАЗОВАНИЕ В FLOAT
             direction=data['direction'], 
             setup_note=data.get('setup_note', ''),
-            created_at=data.get('created_at', time.time())
+            created_at=float(data.get('created_at', time.time())) # <-- И ЗДЕСЬ ТОЖЕ
         )
     
     def __eq__(self, other):
