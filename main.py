@@ -18,16 +18,10 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandle
 
 from src.core.alerts import AlertsManager
 from src.core.monitor import Monitor, AlertEvent
-from src.bot.handlers import (
-    start_cmd,
-    menu_main,
-    handle_add_alert,
-    handle_callback,
-    handle_message,
-    export_cmd,
-    screener_cmd,
-    status_cmd,
-)
+from src.core.alerts import AlertsManager
+from src.core.monitor import Monitor, AlertEvent
+from src.telegram.bot import TelegramBot
+from src.utils.data_exporter import DataExporter
 
 
 def setup_logging():
