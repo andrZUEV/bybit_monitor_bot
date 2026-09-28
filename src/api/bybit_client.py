@@ -7,6 +7,13 @@ import logging
 import requests
 from typing import Optional, Dict, Any, List
 
+from dataclasses import dataclass
+
+@dataclass
+class TickerData:
+    price: float
+    volume_24h: float
+
 logger = logging.getLogger(__name__)
 
 
@@ -82,10 +89,10 @@ class BybitClient:
         result = self._make_request("GET", "/v5/market/tickers", params=params)
         if result and "list" in result and len(result["list"]) > 0:
             ticker = result["list"][0]
-            return type('TickerData', (object,), {
-                'price': float(ticker['lastPrice']),
-                'volume_24h': float(ticker['volume24h'])
-            })
+            return TickerData(
+                price=float(ticker['lastPrice']),
+                volume_24h=float(ticker['volume24h'])
+            )
         return None
 
     def get_klines(
