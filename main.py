@@ -50,10 +50,9 @@ def setup_logging():
     )
     
     # Снижаем уровень логирования для шумных библиотек
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    logging.getLogger("httpcore").setLevel(logging.WARNING)
-    logging.getLogger("telegram").setLevel(logging.WARNING)
-    logging.getLogger("apscheduler").setLevel(logging.WARNING)
+    logging.getLogger("telegram").setLevel(logging.INFO)
+    logging.getLogger("telegram.ext").setLevel(logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.INFO)
 
 
 # ==================== ГЛАВНАЯ ЛОГИКА ====================

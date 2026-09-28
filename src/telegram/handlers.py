@@ -251,6 +251,9 @@ class TelegramHandlers:
 
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
+        data = query.data
+        logger.info(f"🔘 CALLBACK RECEIVED: data={data!r} | chat_id={update.effective_chat.id} | user={query.from_user.id}")
+        
         await query.answer()
         if not self._is_allowed(update):
             await query.edit_message_text("⛔️ Доступ запрещён")
