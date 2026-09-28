@@ -25,53 +25,40 @@ from src.utils.data_exporter import DataExporter
 
 
 def setup_logging():
-    """
-    Настраивает логирование с ротацией файлов.
-    - Консоль: INFO
-    - Файл: DEBUG, ротация 5 МБ × 3 backup
-    """
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
-    log_file = log_dir / "bot.log"
+    """Настраивает логирование с ротацией файлов"""
+    log_format = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
     
-    # Формат логов
-    log_format = logging.Formatter(
-        '%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
+    # Создаём папку logs если её нет
+    Config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    log_file = Config.LOGS_DIR / "bot.log"
+    
+    # Импортируем RotatingFileHandler
+    from logging.handlers import RotatingFileHandler
+    
+    handlers = [
+        logging.StreamHandler(sys.stdout),
+        # Ротация: 5 МБ × 3 backup = максимум 20 МБ логов
+        RotatingFileHandler(
+            filename=log_file,
+            maxBytes=5 * 1024 * 1024,  # 5 МБ
+            backupCount=3,
+            encoding="utf-8"
+        )
+    ]
+    
+    logging.basicConfig(
+        level=getattr(logging, Config.LOG_LEVEL.upper(), logging.INFO),
+        format=log_format,
+        datefmt=date_format,
+        handlers=handlers
     )
     
-    # Root logger
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)
-    
-    # Очищаем старые handlers (на случай перезапуска)
-    root_logger.handlers.clear()
-    
-    # === Консольный handler (INFO) ===
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(log_format)
-    root_logger.addHandler(console_handler)
-    
-    # === Файловый handler с ротацией (DEBUG) ===
-    # 5 МБ × 3 backup = максимум 20 МБ логов
-    file_handler = RotatingFileHandler(
-        filename=log_file,
-        maxBytes=5 * 1024 * 1024,  # 5 МБ
-        backupCount=3,
-        encoding='utf-8'
-    )
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(log_format)
-    root_logger.addHandler(file_handler)
-    
-    # === Отключаем шумные логи ===
-    # telegram-library слишком многословна
-    logging.getLogger('telegram').setLevel(logging.WARNING)
-    logging.getLogger('httpx').setLevel(logging.WARNING)
-    logging.getLogger('httpcore').setLevel(logging.WARNING)
-    
-    logging.info(f"📝 Логирование настроено: {log_file}")
+    # Снижаем уровень логирования для шумных библиотек
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("telegram").setLevel(logging.WARNING)
+    logging.getLogger("apscheduler").setLevel(logging.WARNING)
 
 
 def load_config():
