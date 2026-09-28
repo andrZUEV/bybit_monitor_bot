@@ -96,11 +96,21 @@ class TelegramHandlers:
     async def data_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update): return
         if not context.args or len(context.args) == 0:
-            await update.message.reply_text("❌ Укажите символ\n\nПример: <code>/data BTCUSDT</code>", parse_mode='HTML')
+            await update.message.reply_text(
+                "❌ Укажите символ\n\n"
+                "Пример: <code>/data ETH</code> или <code>/data ETHUSDT</code>",
+                parse_mode='HTML'
+            )
             return
-        symbol = context.args[0].upper()
+        
+        # Умная обработка: верхний регистр + добавление USDT при необходимости
+        symbol = context.args[0].strip().upper()
+        if not symbol.endswith('USDT'):
+            symbol += 'USDT'
+            
         await update.message.reply_text(f"⏳ Выгружаю данные {symbol}...")
         filepath = self._generate_export_file([symbol])
+        
         if filepath and os.path.exists(filepath):
             with open(filepath, 'rb') as f:
                 await update.message.reply_document(
@@ -118,40 +128,65 @@ class TelegramHandlers:
         state = self.user_state.get(chat_id, {})
         
         if state.get('step') == 'waiting_for_export_tickers':
-            tickers_input = text.upper().split()
-            valid_tickers = [t for t in tickers_input if t.endswith('USDT') and len(t) >= 6]
+            # Разбиваем ввод на слова и приводим к верхнему регистру (нечувствительно к регистру)
+            raw_tickers = text.upper().split()
+            
+            # Обрабатываем каждый тикер: добавляем USDT, если его еще нет
+            valid_tickers = []
+            for t in raw_tickers:
+                t = t.strip().upper()
+                if not t.endswith('USDT'):
+                    t += 'USDT'
+                
+                # Простая валидация длины (например, BTCUSDT = 6 символов)
+                if len(t) >= 6:
+                    valid_tickers.append(t)
+            
             if not valid_tickers:
-                await update.message.reply_text("❌ Неверный формат. Введите тикеры, заканчивающиеся на USDT, через пробел.\nНапример: <code>BTCUSDT ETHUSDT</code>", parse_mode='HTML', reply_markup=keyboards.cancel_keyboard())
+                await update.message.reply_text(
+                    "❌ Неверный формат. Введите тикеры через пробел.\n"
+                    "Можно писать как <code>BTC ETH</code>, так и <code>BTCUSDT ETHUSDT</code>.",
+                    parse_mode='HTML',
+                    reply_markup=keyboards.cancel_keyboard()
+                )
                 return
+            
             await update.message.reply_text(f"⏳ Генерирую файл для {len(valid_tickers)} тикеров...")
             filepath = self._generate_export_file(valid_tickers)
+            
             if filepath and os.path.exists(filepath):
                 with open(filepath, 'rb') as f:
-                    await update.message.reply_document(document=InputFile(f, filename=os.path.basename(filepath)), caption=f"✅ Данные выгружены для: {', '.join(valid_tickers)}")
+                    await update.message.reply_document(
+                        document=InputFile(f, filename=os.path.basename(filepath)),
+                        caption=f"✅ Данные выгружены для: {', '.join(valid_tickers)}"
+                    )
                 os.remove(filepath)
             else:
                 await update.message.reply_text("❌ Ошибка при генерации файла.")
+            
             self._reset_state(chat_id)
             return
 
         if state.get('step') == 'waiting_symbol':
-            symbol = text.upper().replace(' ', '')
-            if len(symbol) < 4 or not symbol.isalpha():
-                await update.message.reply_text("❌ Некорректный тикер.", parse_mode='HTML', reply_markup=keyboards.cancel_keyboard())
+            # Умная обработка: убираем пробелы, верхний регистр, добавляем USDT
+            symbol = text.strip().upper().replace(' ', '')
+            if not symbol.endswith('USDT'):
+                symbol += 'USDT'
+                
+            if len(symbol) < 6 or not symbol.isalpha():
+                await update.message.reply_text(
+                    "❌ Некорректный тикер.", 
+                    parse_mode='HTML', 
+                    reply_markup=keyboards.cancel_keyboard()
+                )
                 return
+                
             self.user_state[chat_id] = {'step': 'waiting_price', 'symbol': symbol}
-            await update.message.reply_text(f"✅ Тикер: <b>{symbol}</b>\nВведите цену:", parse_mode='HTML', reply_markup=keyboards.cancel_keyboard())
-            return
-            
-        if state.get('step') == 'waiting_price':
-            try:
-                price = float(text.replace(',', '.'))
-                if price <= 0: raise ValueError
-            except ValueError:
-                await update.message.reply_text("❌ Некорректная цена.", reply_markup=keyboards.cancel_keyboard())
-                return
-            self.user_state[chat_id] = {'step': 'waiting_direction', 'symbol': state['symbol'], 'price': price}
-            await update.message.reply_text(f"✅ Цена: <code>{price:,.2f}</code>\nВыберите направление:", parse_mode='HTML', reply_markup=keyboards.direction_keyboard())
+            await update.message.reply_text(
+                f"✅ Тикер: <b>{symbol}</b>\nВведите цену:", 
+                parse_mode='HTML', 
+                reply_markup=keyboards.cancel_keyboard()
+            )
             return
 
         lines = [line.strip() for line in text.split('\n') if line.strip()]
