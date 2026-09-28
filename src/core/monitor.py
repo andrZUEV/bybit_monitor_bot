@@ -16,8 +16,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 from src.api.bybit_client import BybitClient, TickerData
 from src.core.alerts import AlertsManager, Asset, AlertRule
 from src.core.cooldown import CooldownManager
-from src.core.analyzer import analyze_candle_confirmation, format_confirmation_message
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup  # <-- ДОБАВЛЕНО для кнопок
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +34,7 @@ class AlertEvent:
     current_price: float
     message: str
     extra: Dict[str, Any] = field(default_factory=dict)
-    reply_markup: Any = None  # <-- ДОБАВЛЕНО для поддержки клавиатур
+    reply_markup: Any = None
 
 
 @dataclass
@@ -97,7 +96,8 @@ class Monitor:
                 elif direction == 'down' and curr > target:
                     state.triggered_alerts[alert_key] = False
                 elif direction == 'any':
-                    if (abs(curr - target) / target if target > 0 else 0) > self.price_reset_threshold:
+                    distance = abs(curr - target) / target if target > 0 else 0
+                    if distance > self.price_reset_threshold:
                         state.triggered_alerts[alert_key] = False
                 continue
             
@@ -106,63 +106,80 @@ class Monitor:
             is_triggered = state.triggered_alerts.get(alert_key, False)
             
             if should_alert and not is_triggered:
+                # 1. ПРОВЕРКА КУЛДАУНА ДО ЗАПРОСА СВЕЧЕЙ (защита от спама API)
+                if not self.cooldown_manager.can_send(asset.symbol, target, direction):
+                    logger.debug(f"⏭️ Алерт ПРОПУЩЕН (кулдаун): {asset.symbol} @ {target}")
+                    state.triggered_alerts[alert_key] = True
+                    continue
+                
                 cross_text = "🟢 СНИЗУ ВВЕРХ" if cross_type == CrossDirection.UP else "🔴 СВЕРХУ ВНИЗ"
                 
-                klines = self.client.get_klines(asset.symbol, asset.category, self.candle_interval, 30)
-                vol_data = self.client.get_candle_volume_ratio(asset.symbol, asset.category, self.candle_interval, self.candle_periods)
+                # 2. Получаем свечи и объем ТОЛЬКО если не в кулдауне
+                klines_15m = self.client.get_klines(asset.symbol, asset.category, "15", 50)
+                klines_4h = self.client.get_klines(asset.symbol, asset.category, "240", 30)
+                
+                vol_data = self.client.get_candle_volume_ratio(asset.symbol, asset.category, "15", 20)
                 volume_ratio = vol_data["ratio"] if vol_data else 0.0
                 
-                if klines:
-                    analysis = analyze_candle_confirmation(
-                        klines=klines, 
-                        level=target, 
-                        direction=direction, 
-                        volume_ratio=volume_ratio, 
-                        interval_minutes=int(self.candle_interval)
+                from src.core.analyzer import evaluate_alert, format_alert_message
+                
+                if klines_15m and klines_4h:
+                    evaluation = evaluate_alert(
+                        symbol=asset.symbol,
+                        level=target,
+                        direction=direction,
+                        current_price=curr,
+                        alert_created_at=rule.created_at,
+                        klines_15m=klines_15m,
+                        klines_4h=klines_4h,
                     )
                     
-                    # === ГЛАВНАЯ ПРОВЕРКА: SCORE И КУЛДАУН ===
-                    score = analysis.get('strength_score', 0)
-                    
-                    if score >= 3 and self.cooldown_manager.can_send(asset.symbol, target, direction):
-                        confirmation_block = format_confirmation_message(analysis)
-                        note_text = f"\n📝 <b>Сетап:</b> <code>{rule.setup_note}</code>" if rule.setup_note else ""
-                        
-                        message = (
-                            f"🚨 <b>Price Alert: {asset.symbol}</b>\n"
-                            f"Уровень: <code>{target:,.2f}</code>\n"
-                            f"Направление: {cross_text}\n"
-                            f"💰 Цена: <code>{curr:,.2f}</code>"
-                            f"{confirmation_block}"
-                            f"{note_text}"
+                    # Отправляем только если вердикт не "❌ None"
+                    if evaluation['verdict'] != '❌ None':
+                        message = format_alert_message(
+                            symbol=asset.symbol,
+                            level=target,
+                            direction=direction,
+                            current_price=curr,
+                            evaluation=evaluation,
+                            setup_note=rule.setup_note
                         )
                         
-                        # <-- ИСПРАВЛЕНО: Создаем клавиатуру прямо здесь
+                        # ИСПРАВЛЕНО: убрано :, из target, чтобы float() в handlers.py не падал с ValueError
                         alert_keyboard = InlineKeyboardMarkup([
-                            [InlineKeyboardButton(f" Удалить {asset.symbol} @ {target:,.2f}", 
-                                                callback_data=f"del|{asset.symbol}|{target}|{direction}")],
+                            [InlineKeyboardButton(f"🗑 Удалить {asset.symbol} @ {target}", 
+                                                  callback_data=f"del|{asset.symbol}|{target}|{direction}")],
                             [InlineKeyboardButton(f"📊 Выгрузить данные {asset.symbol}", 
-                                                callback_data=f"export_alert_{asset.symbol}")],
+                                                  callback_data=f"export_alert_{asset.symbol}")],
                             [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")]
                         ])
                         
                         event = AlertEvent(
-                            event_type='price_cross', 
-                            symbol=asset.symbol, 
+                            event_type='price_cross',
+                            symbol=asset.symbol,
                             category=asset.category,
-                            current_price=curr, 
+                            current_price=curr,
                             message=message,
-                            extra={'target': target, 'direction': direction, 'analysis': analysis},
-                            reply_markup=alert_keyboard  # <-- ТЕПЕРЬ ПЕРЕМЕННАЯ ОПРЕДЕЛЕНА
+                            extra={
+                                'target': target,
+                                'direction': direction,
+                                'volume_ratio': volume_ratio,
+                                'evaluation': evaluation
+                            },
+                            reply_markup=alert_keyboard
                         )
                         
                         self.on_alert(event)
                         self.cooldown_manager.mark_sent(asset.symbol, target, direction)
-                        state.triggered_alerts[alert_key] = True
-                        logger.info(f"🔔 Алерт ОТПРАВЛЕН: {asset.symbol} @ {target} (Score: {score})")
+                        logger.info(f"🔔 Алерт ОТПРАВЛЕН: {asset.symbol} @ {target} (Score: {evaluation['score']})")
                     else:
-                        reason = "score < 3" if score < 3 else "active cooldown"
-                        logger.debug(f"⏭️ Алерт ПРОПУЩЕН: {asset.symbol} @ {target} ({reason}, Score: {score})")
+                        logger.info(f"⏭️ Алерт ПРОПУЩЕН (слабый сигнал): {asset.symbol} @ {target} (Score: {evaluation['score']})")
+                else:
+                    logger.warning(f"⚠️ Не удалось получить данные для анализа: {asset.symbol}")
+                
+                # В любом случае ставим флаг, чтобы не проверять этот уровень снова, 
+                # пока цена не отойдет и не вернется (защита от спама API)
+                state.triggered_alerts[alert_key] = True
     
     def _poll_once(self):
         self.alerts_manager.load()
