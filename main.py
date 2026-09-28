@@ -84,29 +84,35 @@ def main():
     
     logger.info("✅ Конфигурация загружена успешно")
 
-    # 2. Инициализация менеджера алертов
+    # 2. Инициализация ЕДИНОГО клиента Bybit
+    from src.api.bybit_client import BybitClient
+    bybit_client = BybitClient()
+
+    # 3. Инициализация менеджера алертов
     alerts_manager = AlertsManager(str(Config.ALERTS_FILE))
     total_alerts = sum(len(asset.alerts) for asset in alerts_manager.get_all_alerts())
     logger.info(f"📋 Загружено алертов: {total_alerts}")
 
-    # 3. Инициализация Telegram бота
+    # 4. Инициализация Telegram бота (передаем client)
     global telegram_bot
     telegram_bot = TelegramBot(
         token=Config.TELEGRAM_BOT_TOKEN,
         allowed_chat_id=Config.TELEGRAM_CHAT_ID,
-        alerts_manager=alerts_manager
+        alerts_manager=alerts_manager,
+        bybit_client=bybit_client  # <-- ПЕРЕДАЕМ
     )
     logger.info("✅ Telegram бот инициализирован")
     
-    # 3.1. Очистка старых файлов экспорта (внутри функции main!)
+    # 4.1. Очистка старых файлов экспорта
     exporter = DataExporter(telegram_bot.bybit_client)
     exporter.cleanup_old_files(max_age_hours=1)
     logger.info("🗑 Старые файлы экспорта удалены")
 
-    # 4. Инициализация Монитора
+    # 5. Инициализация Монитора (передаем client)
     monitor = Monitor(
         alerts_manager=alerts_manager,
         on_alert_callback=on_alert_callback,
+        bybit_client=bybit_client,  # <-- ПЕРЕДАЕМ
         poll_interval=Config.POLL_INTERVAL,
         volume_threshold=Config.VOLUME_THRESHOLD,
         volume_cooldown=Config.VOLUME_COOLDOWN,
@@ -118,7 +124,7 @@ def main():
     )
     logger.info("✅ Монитор инициализирован")
 
-    # 5. Запуск компонентов
+    # 6. Запуск компонентов
     logger.info("🔄 Запуск фоновых служб...")
     
     # Запускаем бота в отдельном потоке (неблокирующий)
@@ -139,7 +145,7 @@ def main():
     
     telegram_bot.send_alert(welcome_msg, reply_markup=main_menu_keyboard())
 
-    # 6. Основной цикл (блокирующий)
+    # 7. Основной цикл (блокирующий)
     try:
         logger.info("▶️ Мониторинг начался. Нажмите Ctrl+C для остановки.")
         monitor.start()

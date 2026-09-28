@@ -19,6 +19,9 @@ from src.core.alerts import AlertsManager
 from src.api.bybit_client import BybitClient  # <-- ДОБАВЛЕН ИМПОРТ
 from src.telegram.handlers import TelegramHandlers
 
+
+from typing import Optional, Any
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,20 +31,26 @@ class TelegramBot:
     """
     
     def __init__(
-        self,
-        token: str,
-        allowed_chat_id: str,
-        alerts_manager: AlertsManager
+        self, 
+        token: str, 
+        allowed_chat_id: str, 
+        alerts_manager: AlertsManager,
+        bybit_client: Optional[Any] = None  # <-- ДОБАВИТЬ
     ):
         self.token = token
-        self.allowed_chat_id = str(allowed_chat_id)
+        self.allowed_chat_id = allowed_chat_id
         self.alerts_manager = alerts_manager
         
-        # 1. Создаем клиент Bybit
-        self.bybit_client = BybitClient()
+        # Если клиент не передан, создаем новый (для обратной совместимости)
+        from src.api.bybit_client import BybitClient
+        self.bybit_client = bybit_client or BybitClient()
         
-        # 2. Передаем его в обработчики (теперь 3 аргумента, ошибки не будет)
-        self.handlers = TelegramHandlers(self.alerts_manager, self.allowed_chat_id, self.bybit_client)
+        self.handlers = TelegramHandlers(
+            alerts_manager=alerts_manager,
+            allowed_chat_id=allowed_chat_id,
+            bybit_client=self.bybit_client
+        )
+        # ... остальной код без изменений ...
         
         self._application: Application = None
         self._thread: threading.Thread = None

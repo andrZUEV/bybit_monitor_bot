@@ -69,7 +69,10 @@ class Monitor:
         self.candle_periods = candle_periods
         self.candle_volume_multiplier = candle_volume_multiplier
         
-        self.client = BybitClient()
+        # Если клиент не передан, создаем новый
+        from src.api.bybit_client import BybitClient
+        self.client = bybit_client or BybitClient()
+        
         self.cooldown_manager = CooldownManager(cooldown_minutes=alert_cooldown_minutes)
         self.states: Dict[str, AssetState] = {}
         self._running = False
