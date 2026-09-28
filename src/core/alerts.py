@@ -25,13 +25,27 @@ class AlertRule:
         return asdict(self)
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'AlertRule':
-        return cls(
-            price=float(data['price']),  # <-- ЯВНОЕ ПРЕОБРАЗОВАНИЕ В FLOAT
-            direction=data['direction'], 
-            setup_note=data.get('setup_note', ''),
-            created_at=float(data.get('created_at', time.time())) # <-- И ЗДЕСЬ ТОЖЕ
-        )
+    def from_dict(cls, data: Dict[str, Any]) -> Optional['AlertRule']:
+        """Безопасное создание из словаря с игнорированием битых записей"""
+        try:
+            # Если data - это строка (например, случайно записалось "up" вместо dict), игнорируем
+            if isinstance(data, str):
+                return None
+            
+            price = float(data.get('price', 0))
+            direction = str(data.get('direction', 'any'))
+            setup_note = str(data.get('setup_note', ''))
+            created_at = float(data.get('created_at', time.time()))
+            
+            return cls(
+                price=price,
+                direction=direction,
+                setup_note=setup_note,
+                created_at=created_at
+            )
+        except (ValueError, TypeError, AttributeError) as e:
+            logger.warning(f"⚠️ Пропущен некорректный алерт: {data}. Ошибка: {e}")
+            return None
     
     def __eq__(self, other):
         if not isinstance(other, AlertRule):
@@ -55,10 +69,20 @@ class Asset:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Asset':
+        """Безопасное создание актива с фильтрацией битых алертов"""
+        alerts = []
+        raw_alerts = data.get('alerts', [])
+        
+        if isinstance(raw_alerts, list):
+            for a in raw_alerts:
+                rule = AlertRule.from_dict(a)
+                if rule:  # Добавляем только валидные правила
+                    alerts.append(rule)
+        
         return cls(
-            symbol=data['symbol'],
-            category=data.get('category', 'linear'),
-            alerts=[AlertRule.from_dict(a) for a in data.get('alerts', [])]
+            symbol=str(data.get('symbol', 'UNKNOWN')),
+            category=str(data.get('category', 'linear')),
+            alerts=alerts
         )
 
 
@@ -68,7 +92,6 @@ class AlertsManager:
     Все операции чтения/записи защищены threading.Lock.
     """
     
-    # Глобальный lock для всех инстансов (на случай если создаётся несколько раз)
     _global_lock = threading.Lock()
     
     def __init__(self, storage_path: str = "data/alerts.json"):
@@ -82,14 +105,22 @@ class AlertsManager:
         """Загружает алерты из файла (потокобезопасно)"""
         with self._lock:
             if not self.storage_path.exists():
-                logger.info(f"Файл {self.storage_path} не найден, начинаем с пустого списка")
                 self.assets = []
                 return
             try:
                 with open(self.storage_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                self.assets = [Asset.from_dict(a) for a in data.get('assets', [])]
-                logger.debug(f"Загружено {len(self.assets)} активов")
+                
+                # Фильтруем только валидные активы
+                valid_assets = []
+                for a in data.get('assets', []):
+                    if isinstance(a, dict):
+                        asset = Asset.from_dict(a)
+                        if asset.symbol != 'UNKNOWN' or asset.alerts:
+                            valid_assets.append(asset)
+                
+                self.assets = valid_assets
+                
             except json.JSONDecodeError as e:
                 logger.error(f"Ошибка парсинга JSON: {e}. Пробуем .bak")
                 self._try_restore_backup()
@@ -104,23 +135,27 @@ class AlertsManager:
             try:
                 with open(backup_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                self.assets = [Asset.from_dict(a) for a in data.get('assets', [])]
-                logger.warning(f"Восстановлено из .bak: {len(self.assets)} активов")
+                
+                valid_assets = []
+                for a in data.get('assets', []):
+                    if isinstance(a, dict):
+                        asset = Asset.from_dict(a)
+                        if asset.symbol != 'UNKNOWN' or asset.alerts:
+                            valid_assets.append(asset)
+                
+                self.assets = valid_assets
+                logger.warning(f"✅ Восстановлено из .bak: {len(self.assets)} активов")
                 return
             except Exception as e:
                 logger.error(f"Не удалось восстановить из .bak: {e}")
         self.assets = []
     
     def save(self):
-        """
-        Атомарное сохранение с .bak бэкапом.
-        Потокобезопасно через threading.Lock.
-        """
+        """Атомарное сохранение с .bak бэкапом. Потокобезопасно."""
         with self._lock:
             try:
                 data = {'assets': [a.to_dict() for a in self.assets]}
                 
-                # Сначала пишем в .tmp
                 tmp_path = self.storage_path.with_suffix('.json.tmp')
                 with open(tmp_path, 'w', encoding='utf-8') as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
@@ -128,22 +163,19 @@ class AlertsManager:
                     import os
                     os.fsync(f.fileno())
                 
-                # Создаём .bak из текущего файла
                 if self.storage_path.exists():
                     backup_path = self.storage_path.with_suffix('.json.bak')
                     try:
                         if backup_path.exists():
                             backup_path.unlink()
                         self.storage_path.rename(backup_path)
-                    except Exception as e:
-                        logger.warning(f"Не удалось создать .bak: {e}")
+                    except Exception:
+                        pass
                 
-                # Атомарно переименовываем .tmp -> .json
                 tmp_path.rename(self.storage_path)
                 
             except Exception as e:
                 logger.error(f"Ошибка сохранения алертов: {e}")
-                # Пытаемся восстановить из .bak
                 self._try_restore_backup()
     
     def get_all_alerts(self) -> List[Asset]:
@@ -151,81 +183,65 @@ class AlertsManager:
         with self._lock:
             return list(self.assets)
     
-    def get_asset(self, symbol: str) -> Optional[Asset]:
-        """Находит актив по символу"""
+    def add_alert(self, symbol: str, price: float, direction: str, category: str = "linear", setup_note: str = "") -> tuple:
+        """Добавляет алерт. Возвращает (success, replaced)"""
+        symbol = symbol.upper()
+        if direction not in ['up', 'down', 'any']:
+            return False, False
+        
+        new_rule = AlertRule(price=float(price), direction=direction, setup_note=setup_note.strip())
+        
         with self._lock:
             for asset in self.assets:
                 if asset.symbol == symbol:
-                    return asset
-            return None
-    
-    def add_asset(self, asset: Asset):
-        """Добавляет новый актив"""
-        with self._lock:
-            # Проверяем дубликаты
-            for existing in self.assets:
-                if existing.symbol == asset.symbol:
-                    return False
-            self.assets.append(asset)
+                    existing_idx = None
+                    for i, rule in enumerate(asset.alerts):
+                        if rule.price == new_rule.price:
+                            existing_idx = i
+                            break
+                    
+                    if existing_idx is not None:
+                        old_rule = asset.alerts[existing_idx]
+                        new_rule.created_at = old_rule.created_at  # Сохраняем время создания
+                        asset.alerts[existing_idx] = new_rule
+                        self.save()
+                        return True, True
+                    
+                    asset.alerts.append(new_rule)
+                    self.save()
+                    return True, False
+            
+            new_asset = Asset(symbol=symbol, category=category, alerts=[new_rule])
+            self.assets.append(new_asset)
+        
         self.save()
-        return True
+        return True, False
     
-    def remove_asset(self, symbol: str) -> bool:
-        """Удаляет актив по символу"""
+    def remove_alert(self, symbol: str, price: float, direction: str) -> bool:
+        """Удаляет конкретный алерт"""
+        symbol = symbol.upper()
+        with self._lock:
+            for asset in self.assets:
+                if asset.symbol == symbol:
+                    initial_len = len(asset.alerts)
+                    asset.alerts = [
+                        a for a in asset.alerts 
+                        if not (a.price == float(price) and a.direction == direction)
+                    ]
+                    if len(asset.alerts) < initial_len:
+                        if not asset.alerts:
+                            self.assets.remove(asset)
+                        self.save()
+                        return True
+        return False
+    
+    def remove_all_alerts_for_symbol(self, symbol: str) -> bool:
+        """Удаляет все алерты для символа"""
+        symbol = symbol.upper()
         with self._lock:
             initial_len = len(self.assets)
             self.assets = [a for a in self.assets if a.symbol != symbol]
             removed = len(self.assets) < initial_len
-        if removed:
-            self.save()
-        return removed
-    
-    def add_alert(self, symbol: str, category: str, price: float, direction: str, setup_note: str = "") -> bool:
-        """Добавляет алерт к существующему или новому активу"""
-        with self._lock:
-            asset = None
-            for a in self.assets:
-                if a.symbol == symbol:
-                    asset = a
-                    break
-            
-            if asset is None:
-                asset = Asset(symbol=symbol, category=category, alerts=[])
-                self.assets.append(asset)
-            
-            new_rule = AlertRule(
-                price=price,
-                direction=direction,
-                setup_note=setup_note,
-                created_at=time.time()
-            )
-            
-            # Проверяем дубликаты
-            if new_rule in asset.alerts:
-                return False
-            
-            asset.alerts.append(new_rule)
-        
-        self.save()
-        return True
-    
-    def remove_alert(self, symbol: str, price: float, direction: str) -> bool:
-        """Удаляет конкретный алерт"""
-        with self._lock:
-            asset = self.get_asset(symbol)
-            if asset is None:
-                return False
-            
-            initial_len = len(asset.alerts)
-            asset.alerts = [
-                a for a in asset.alerts 
-                if not (a.price == price and a.direction == direction)
-            ]
-            removed = len(asset.alerts) < initial_len
-            
-            # Удаляем актив, если алертов не осталось
-            if not asset.alerts:
-                self.assets = [a for a in self.assets if a.symbol != symbol]
         
         if removed:
             self.save()
