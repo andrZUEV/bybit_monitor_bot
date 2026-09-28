@@ -26,19 +26,18 @@ from src.utils.data_exporter import DataExporter
 
 def setup_logging():
     """Настраивает логирование с ротацией файлов"""
+    from logging.handlers import RotatingFileHandler
+    
     log_format = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
     
-    # Создаём папку logs если её нет
-    Config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
-    log_file = Config.LOGS_DIR / "bot.log"
-    
-    # Импортируем RotatingFileHandler
-    from logging.handlers import RotatingFileHandler
+    # Используем простой путь вместо Config.LOGS_DIR
+    log_dir = Path("logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_file = log_dir / "bot.log"
     
     handlers = [
         logging.StreamHandler(sys.stdout),
-        # Ротация: 5 МБ × 3 backup = максимум 20 МБ логов
         RotatingFileHandler(
             filename=log_file,
             maxBytes=5 * 1024 * 1024,  # 5 МБ
@@ -48,7 +47,7 @@ def setup_logging():
     ]
     
     logging.basicConfig(
-        level=getattr(logging, Config.LOG_LEVEL.upper(), logging.INFO),
+        level=logging.INFO,
         format=log_format,
         datefmt=date_format,
         handlers=handlers
