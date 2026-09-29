@@ -254,7 +254,6 @@ class TelegramHandlers:
         data = query.data
         logger.info(f"🔘 CALLBACK RECEIVED: data={data!r} | chat_id={update.effective_chat.id} | user={query.from_user.id}")
         
-        await query.answer()
         if not self._is_allowed(update):
             await query.edit_message_text("⛔️ Доступ запрещён")
             return
@@ -308,57 +307,100 @@ class TelegramHandlers:
             else:
                 await query.edit_message_text("❌ Ошибка экспорта", reply_markup=keyboards.main_menu_keyboard())
         elif data.startswith("export_alert_"):
-            symbol = data.replace("export_alert_", "")
-            await query.edit_message_text(f"⏳ Выгружаю данные {symbol}...")
-            filepath = self._generate_export_file([symbol])
-            if filepath and os.path.exists(filepath):
-                with open(filepath, 'rb') as f:
-                    await update.callback_query.message.reply_document(document=InputFile(f, filename=os.path.basename(filepath)), caption=f"✅ Данные {symbol} выгружены\n15m: 150 свечей\n1H: 100 свечей\n4H: 70 свечей")
-                os.remove(filepath)
-                await query.edit_message_text("✅ Файл отправлен!", reply_markup=keyboards.main_menu_keyboard())
-            else:
-                await query.edit_message_text("❌ Ошибка экспорта", reply_markup=keyboards.main_menu_keyboard())
-        elif data.startswith("scr_add_"):
-            symbol = data.replace("scr_add_", "")
-            self.user_state[chat_id] = {'step': 'waiting_price', 'symbol': symbol}
-            await query.edit_message_text(f"➕ <b>Алерт на {symbol}</b>\nВведите цену:", parse_mode='HTML', reply_markup=keyboards.cancel_keyboard())
+            symbol = data.replace("export_alert_", "").upper()
+
         elif data == "menu_prices":
             await self._handle_current_prices(update)
-        elif data.startswith("dir_"):
-            state = self.user_state.get(chat_id, {})
-            if state.get('step') != 'waiting_direction':
-                await query.edit_message_text("⚠️ Сессия устарела", reply_markup=keyboards.main_menu_keyboard())
-                return
-            direction = data.replace("dir_", "")
-            symbol = state['symbol']
-            price = state['price']
-            success = self.alerts_manager.add_alert(symbol, price, direction, "linear", "")
-            self._reset_state(chat_id)
-            dir_text = {"up": "снизу вверх 🟢", "down": "сверху вниз 🔴", "any": "любое ⚪️"}
-            await query.edit_message_text(f"✅ <b>Добавлено:</b>\n🪙 {symbol}\n💰 {price:,.2f}\n🎯 {dir_text[direction]}", parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
-        elif data in ["menu_list", "menu_remove"]:
+
+        elif data == "menu_list":
             await self._show_list(update, context)
+
+        elif data == "menu_help":
+            await self._show_help(update)
+
         elif data.startswith("del_all_"):
-            symbol = data.replace("del_all_", "")
-            if self.alerts_manager.remove_all_alerts_for_symbol(symbol):
-                await query.edit_message_text(f"🗑 <b>Удалено: {symbol}</b>", parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
+            symbol = data.replace("del_all_", "").upper()
+            removed = self.alerts_manager.remove_all_alerts_for_symbol(symbol)
+            if removed:
+                await query.edit_message_text(
+                    f"🗑 Все алерты для <b>{symbol}</b> удалены",
+                    parse_mode="HTML",
+                    reply_markup=keyboards.main_menu_keyboard()
+                )
             else:
-                await query.edit_message_text("❌ Нечего удалять", reply_markup=keyboards.main_menu_keyboard())
+                await query.edit_message_text(
+                    f"⚠️ Алертов для <b>{symbol}</b> не найдено",
+                    parse_mode="HTML",
+                    reply_markup=keyboards.main_menu_keyboard()
+                )
+
         elif data.startswith("del|"):
+            # Формат: del|SYMBOL|PRICE|DIRECTION
             parts = data.split("|")
             if len(parts) == 4:
                 _, symbol, price_str, direction = parts
                 try:
-                    if self.alerts_manager.remove_alert(symbol, float(price_str), direction):
-                        await query.edit_message_text(f"🗑 Удалено: <b>{symbol}</b>", parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
+                    price = float(price_str)
+                    removed = self.alerts_manager.remove_alert(symbol, price, direction)
+                    if removed:
+                        await query.edit_message_text(
+                            f"🗑 Удалён алерт <b>{symbol}</b> @ {price}",
+                            parse_mode="HTML",
+                            reply_markup=keyboards.main_menu_keyboard()
+                        )
                     else:
-                        await query.edit_message_text("❌ Не найдено", reply_markup=keyboards.main_menu_keyboard())
+                        await query.answer("Алерт не найден", show_alert=True)
                 except ValueError:
-                    await query.edit_message_text("❌ Ошибка", reply_markup=keyboards.main_menu_keyboard())
-        elif data == "menu_help":
-            await self._show_help(update)
-        elif data == "noop":
-            await query.answer()
+                    await query.answer("Ошибка формата цены", show_alert=True)
+
+        elif data.startswith("scr_add_"):
+            symbol = data.replace("scr_add_", "").upper()
+            self.user_state[chat_id] = {'step': 'waiting_symbol', 'symbol': symbol, 'from_screener': True}
+            await query.edit_message_text(
+                f"➕ <b>Алерт на {symbol}</b>\nВведите цену:",
+                parse_mode="HTML",
+                reply_markup=keyboards.cancel_keyboard()
+            )
+
+        else:
+            logger.warning(f"⚠️ Необработанный callback: {data!r}")
+            await query.answer("Команда в разработке", show_alert=False)
+            try:
+                await query.edit_message_text(f"⏳ Выгружаю данные <b>{symbol}</b>...", parse_mode="HTML")
+            except Exception:
+                pass
+
+            filepath = self._generate_export_file([symbol])
+
+            if filepath and os.path.exists(filepath):
+                try:
+                    with open(filepath, "rb") as f:
+                        await query.message.reply_document(
+                            document=InputFile(f, filename=os.path.basename(filepath)),
+                            caption=f"✅ Данные по <b>{symbol}</b>\n15m / 1H / 4H + RSI"
+                        )
+                    await query.edit_message_text(
+                        f"✅ Файл по <b>{symbol}</b> отправлен",
+                        parse_mode="HTML",
+                        reply_markup=keyboards.main_menu_keyboard()
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка отправки файла {symbol}: {e}", exc_info=True)
+                    await query.edit_message_text(
+                        f"❌ Не удалось отправить файл по {symbol}",
+                        reply_markup=keyboards.main_menu_keyboard()
+                    )
+                finally:
+                    try:
+                        os.remove(filepath)
+                    except Exception:
+                        pass
+            else:
+                await query.edit_message_text(
+                    f"❌ Не удалось получить данные по <b>{symbol}</b>",
+                    parse_mode="HTML",
+                    reply_markup=keyboards.main_menu_keyboard()
+                )
 
     async def _run_screener_simple(self, update: Update, chat_id: int):
         query = update.callback_query
@@ -403,28 +445,49 @@ class TelegramHandlers:
         return text
 
     async def _handle_current_prices(self, update: Update):
+        logger.info(">>> ВОШЁЛ В _handle_current_prices")
         query = update.callback_query
         await query.answer()
+
         try:
             await query.edit_message_text("⏳ Загружаю цены...")
         except Exception:
             pass
+
         assets = self.alerts_manager.get_all_alerts()
         if not assets:
             await query.edit_message_text("📋 Пусто.", reply_markup=keyboards.main_menu_keyboard())
             return
+
         text = "💰 <b>Текущие цены:</b>\n\n"
-        for symbol in list(set(a.symbol for a in assets)):
-            category = next((a.category for a in assets if a.symbol == symbol), "linear")
-            ticker = self.bybit_client.get_ticker(symbol, category)
-            text += f"🪙 <b>{symbol}</b>: <code>{ticker.price:,.4f}</code> $\n" if ticker else f"🪙 <b>{symbol}</b>: ❌\n"
+        symbols = list(set(a.symbol for a in assets))
+
+        for symbol in symbols:
+            try:
+                category = next((a.category for a in assets if a.symbol == symbol), "linear")
+                ticker = self.bybit_client.get_ticker(symbol, category)
+
+                if ticker:
+                    price_str = f"{ticker.price:,.4f}" if ticker.price < 1000 else f"{ticker.price:,.2f}"
+                    text += f"🪙 <b>{symbol}</b>: <code>{price_str}</code> $\n"
+                else:
+                    text += f"🪙 <b>{symbol}</b>: ❌ нет данных\n"
+            except Exception as e:
+                logger.error(f"Ошибка получения цены {symbol}: {e}")
+                text += f"🪙 <b>{symbol}</b>: ⚠️ ошибка\n"
+
         try:
-            await query.edit_message_text(text, parse_mode='HTML', reply_markup=keyboards.main_menu_keyboard())
+            await query.edit_message_text(
+                text,
+                parse_mode="HTML",
+                reply_markup=keyboards.main_menu_keyboard()
+            )
         except Exception as e:
             if "Message is not modified" not in str(e):
-                logger.error(f"Ошибка в _handle_current_prices: {e}")
+                logger.error(f"Ошибка в _handle_current_prices (edit): {e}", exc_info=True)
 
     async def _show_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.info(">>> ВОШЁЛ В _show_list")
         assets = self.alerts_manager.get_all_alerts()
         if not assets:
             text, keyboard = "📋 <b>Пусто</b>", keyboards.main_menu_keyboard()

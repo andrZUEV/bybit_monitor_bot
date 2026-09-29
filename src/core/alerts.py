@@ -92,13 +92,13 @@ class AlertsManager:
     Все операции чтения/записи защищены threading.Lock.
     """
     
-    _global_lock = threading.Lock()
+    _global_lock = threading.RLock()
     
     def __init__(self, storage_path: str = "data/alerts.json"):
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.assets: List[Asset] = []
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.load()
     
     def load(self):

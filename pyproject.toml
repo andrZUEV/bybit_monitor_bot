@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=68.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "bybit-monitor-bot"
@@ -9,9 +9,21 @@ description = "Bybit Price & Volume Monitor with Telegram Bot"
 requires-python = ">=3.10"
 dependencies = [
     "requests>=2.31.0",
-    "python-telegram-bot>=20.7",
+    "python-telegram-bot>=21.6",
     "python-dotenv>=1.0.0",
+    "colorlog>=6.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
 ]
 
 [tool.setuptools.packages.find]
 include = ["src*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
