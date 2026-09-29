@@ -10,75 +10,116 @@ import pytest
 
 
 @pytest.fixture
-def tmp_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Изолированный data/-каталог.
-
-    Патчит модуль-уровневые константы путей в src.core.alerts,
-    src.core.cooldown, src.utils.config — чтобы менеджеры писали в tmp.
-
-    ВАЖНО: конкретные имена констант зависят от репо. Проверь
-    через `grep -R "ALERTS_FILE\\|COOLDOWNS_FILE\\|EXPORTS_DIR" src/`
-    и поправь monkeypatch.setattr ниже.
-    """
-    from src.core import alerts as alerts_mod
-    from src.core import cooldown as cooldown_mod
-    from src.utils import config as cfg_mod
-
+def tmp_data_dir(tmp_path: Path) -> Path:
+    """Изолированный data/-каталог с пустыми alerts/cooldowns JSON."""
     data_dir = tmp_path / "data"
     data_dir.mkdir()
-    exports_dir = data_dir / "exports"
-    exports_dir.mkdir()
+    (data_dir / "exports").mkdir()
 
-    alerts_file = data_dir / "alerts.json"
-    cooldowns_file = data_dir / "cooldowns.json"
-    alerts_file.write_text(json.dumps({"alerts": []}), encoding="utf-8")
-
-    # Патчим и Config, и модуль-уровневые константы, если они есть.
-    for mod in (cfg_mod, alerts_mod, cooldown_mod):
-        for name, value in [
-            ("PROJECT_ROOT", tmp_path),
-            ("DATA_DIR", data_dir),
-            ("ALERTS_FILE", alerts_file),
-            ("COOLDOWNS_FILE", cooldowns_file),
-            ("EXPORTS_DIR", exports_dir),
-        ]:
-            if hasattr(mod, name):
-                monkeypatch.setattr(mod, name, value, raising=False)
-
+    (data_dir / "alerts.json").write_text(
+        json.dumps({"alerts": []}), encoding="utf-8",
+    )
+    (data_dir / "cooldowns.json").write_text(
+        json.dumps({}), encoding="utf-8",
+    )
     return data_dir
 
 
 @pytest.fixture
-def monitor_factory(monkeypatch: pytest.MonkeyPatch):
+def alerts_path(tmp_data_dir: Path) -> str:
+    """Путь к alerts.json для AlertsManager(storage_path=...)."""
+    return str(tmp_data_dir / "alerts.json")
+
+
+@pytest.fixture
+def cooldowns_path(tmp_data_dir: Path) -> str:
+    """Путь к cooldowns.json для CooldownManager(storage_path=...)."""
+    return str(tmp_data_dir / "cooldowns.json")
+
+
+@pytest.fixture
+def make_alerts_manager(alerts_path: str):
+    """Фабрика AlertsManager с путём в tmp."""
+    from src.core.alerts import AlertsManager
+
+    def _make() -> AlertsManager:
+        return AlertsManager(storage_path=alerts_path)
+
+    return _make
+
+
+@pytest.fixture
+def make_cooldown_manager(cooldowns_path: str):
+    """Фабрика CooldownManager с путём в tmp."""
+    from src.core.cooldown import CooldownManager
+
+    def _make(cooldown_minutes: int = 25) -> CooldownManager:
+        return CooldownManager(
+            cooldown_minutes=cooldown_minutes,
+            storage_path=cooldowns_path,
+        )
+
+    return _make
+
+
+@pytest.fixture
+def make_monitor(tmp_data_dir: Path):
     """Фабрика Monitor с замоканными зависимостями.
 
-    Не стартует WS, не ходит в сеть. Все пути — через tmp_data_dir
-    (передай его как аргумент, если нужно).
+    on_alert_callback — обязательный, передаём MagicMock.
+    bybit_client — можно замокать, чтобы _check_price_cross
+    не ходил в сеть.
     """
+    from src.core.alerts import AlertsManager
     from src.core.monitor import Monitor
 
     def _make(
-        alerts: Any = None,
-        client: Any = None,
         use_websocket: bool = True,
+        on_alert_callback: Any = None,
+        bybit_client: Any = None,
     ) -> Monitor:
-        if client is None:
-            client = MagicMock()
-            client.get_klines.return_value = None
-            client.get_ticker.return_value = None
-        if alerts is None:
-            alerts = MagicMock()
-            alerts.get_all_alerts.return_value = []
+        alerts = AlertsManager(storage_path=str(tmp_data_dir / "alerts.json"))
 
-        # on_alert_callback — обязательный. Передаём no-op.
+        if on_alert_callback is None:
+            on_alert_callback = MagicMock()
+
+        if bybit_client is None:
+            bybit_client = MagicMock()
+            bybit_client.get_klines.return_value = None
+            bybit_client.get_ticker.return_value = None
+
         m = Monitor(
-            bybit_client=client,
             alerts_manager=alerts,
-            on_alert_callback=MagicMock(),
+            on_alert_callback=on_alert_callback,
+            bybit_client=bybit_client,
             use_websocket=use_websocket,
         )
-        # Отключаем реальную отправку.
+        # Отключаем реальную проверку кросса — тестируем только
+        # логику _on_ticker_update.
         m._check_price_cross = MagicMock()
         return m
 
     return _make
+
+
+@pytest.fixture
+def sample_klines_newest_first() -> list[list[Any]]:
+    """Синтетические свечи Bybit-формата (новые первыми).
+
+    [start, open, high, low, close, volume, turnover]
+    """
+    klines: list[list[Any]] = []
+    price = 100.0
+    for i in range(60):
+        price += 0.5
+        klines.append([
+            1_700_000_000_000 + i * 60_000,
+            str(price - 0.2),
+            str(price + 0.3),
+            str(price - 0.4),
+            str(price),
+            "1000",
+            "100000",
+        ])
+    klines.reverse()  # новые первыми
+    return klines

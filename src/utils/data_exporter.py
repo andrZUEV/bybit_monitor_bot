@@ -17,46 +17,7 @@ from src.utils.indicators import calculate_rsi
 logger = logging.getLogger(__name__)
 
 
-def calculate_rsi(closes: list[float], period: int = 14) -> list[float | None]:
-    """
-    Расчёт RSI(14) по формуле Wilder для списка цен закрытия
-    
-    Returns:
-        Список RSI значений (None для первых period свечей)
-    """
-    if len(closes) < period + 1:
-        return [None] * len(closes)
-    
-    rsi_values = [None] * period
-    
-    # Считаем изменения цен
-    changes = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
-    gains = [max(c, 0) for c in changes]
-    losses = [max(-c, 0) for c in changes]
-    
-    # Первое среднее
-    avg_gain = sum(gains[:period]) / period
-    avg_loss = sum(losses[:period]) / period
-    
-    # Первый RSI
-    if avg_loss == 0:
-        rsi_values.append(100.0)
-    else:
-        rs = avg_gain / avg_loss
-        rsi_values.append(100 - (100 / (1 + rs)))
-    
-    # Остальные RSI (сглаживание Wilder)
-    for i in range(period, len(changes)):
-        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-        
-        if avg_loss == 0:
-            rsi_values.append(100.0)
-        else:
-            rs = avg_gain / avg_loss
-            rsi_values.append(round(100 - (100 / (1 + rs)), 1))
-    
-    return rsi_values
+
 
 
 class DataExporter:
@@ -268,7 +229,7 @@ if __name__ == "__main__":
         print(f"📏 Размер: {filepath.stat().st_size / 1024:.2f} KB")
         
         # Показываем первые 10 строк
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, encoding='utf-8') as f:
             lines = f.readlines()[:10]
             print("\n📄 Первые 10 строк:")
             for line in lines:

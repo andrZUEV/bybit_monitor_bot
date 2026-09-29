@@ -176,16 +176,16 @@ def calculate_atr_series(
 
     # Разворачиваем в хронологический порядок
     h = list(reversed(highs))
-    l = list(reversed(lows))
+    low = list(reversed(lows))
     c = list(reversed(closes))
 
-    tr = [h[0] - l[0]]
+    tr = [h[0] - low[0]]
     for i in range(1, n):
         prev_close = c[i - 1]
         tr.append(max(
-            h[i] - l[i],
+            h[i] - low[i],
             abs(h[i] - prev_close),
-            abs(l[i] - prev_close),
+            abs(low[i] - prev_close),
         ))
 
     atr_chrono: list[float | None] = [None] * period

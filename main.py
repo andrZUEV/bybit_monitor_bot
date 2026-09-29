@@ -81,7 +81,10 @@ def main():
     ok, msg = Config.validate()
     if not ok:
         logger.error(f"❌ Ошибка конфигурации: {msg}")
-        logger.error("Проверьте файл .env и убедитесь, что заполнены TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID")
+        logger.error(
+        "Проверьте файл .env и убедитесь, что заполнены "
+        "TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID"
+    )
         sys.exit(1)
     
     logger.info("✅ Конфигурация загружена успешно")

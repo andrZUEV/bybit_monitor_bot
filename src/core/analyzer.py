@@ -82,28 +82,28 @@ def detect_pattern(
     direction: str,
 ) -> str | None:
     """Определяет разворотный паттерн на свече."""
-    o, h, l, c = candle["open"], candle["high"], candle["low"], candle["close"]
+    o, h, low, c = candle["open"], candle["high"], candle["low"], candle["close"]
     po, pc = prev_candle["open"], prev_candle["close"]
 
     body = abs(c - o)
     if body == 0:
         return None
 
-    range_hl = h - l
+    range_hl = h - low
     if range_hl == 0:
         return None
 
     upper_wick = h - max(o, c)
-    lower_wick = min(o, c) - l
+    lower_wick = min(o, c) - low
 
     # Бычий пин-бар (молот)
     if direction == "up":
-        if lower_wick >= 2 * body and upper_wick <= 0.3 * body and (c - l) / range_hl >= 0.66:
+        if lower_wick >= 2 * body and upper_wick <= 0.3 * body and (c - low) / range_hl >= 0.66:
             return "bullish_pinbar"
 
     # Медвежий пин-бар (падающая звезда)
     elif direction == "down":
-        if upper_wick >= 2 * body and lower_wick <= 0.3 * body and (c - l) / range_hl <= 0.33:
+        if upper_wick >= 2 * body and lower_wick <= 0.3 * body and (c - low) / range_hl <= 0.33:
             return "bearish_pinbar"
 
     # Бычье поглощение

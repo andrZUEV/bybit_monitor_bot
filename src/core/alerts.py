@@ -4,6 +4,8 @@
 
 import json
 import logging
+import os
+import tempfile
 import threading
 import time
 from dataclasses import asdict, dataclass, field
@@ -108,7 +110,7 @@ class AlertsManager:
                 self.assets = []
                 return
             try:
-                with open(self.storage_path, 'r', encoding='utf-8') as f:
+                with open(self.storage_path, encoding='utf-8') as f:
                     data = json.load(f)
                 
                 # Фильтруем только валидные активы
@@ -133,7 +135,7 @@ class AlertsManager:
         backup_path = self.storage_path.with_suffix('.json.bak')
         if backup_path.exists():
             try:
-                with open(backup_path, 'r', encoding='utf-8') as f:
+                with open(backup_path, encoding='utf-8') as f:
                     data = json.load(f)
                 
                 valid_assets = []
@@ -150,40 +152,54 @@ class AlertsManager:
                 logger.error(f"Не удалось восстановить из .bak: {e}")
         self.assets = []
     
-    def save(self):
-        """Атомарное сохранение с .bak бэкапом. Потокобезопасно."""
+    def save(self) -> None:
+        """Атомарная запись через mkstemp + os.replace.
+        Весь блок под self._lock — иначе при параллельных add_alert
+        два потока одновременно зовут os.replace на одном dst, и на
+        Windows это даёт WinError 5.
+        """
         with self._lock:
+            path = Path(self.storage_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            data = {"assets": [a.to_dict() for a in self.assets]}
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=path.name + ".", suffix=".tmp", dir=str(path.parent),
+            )
             try:
-                data = {'assets': [a.to_dict() for a in self.assets]}
-                
-                tmp_path = self.storage_path.with_suffix('.json.tmp')
-                with open(tmp_path, 'w', encoding='utf-8') as f:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
                     json.dump(data, f, indent=2, ensure_ascii=False)
                     f.flush()
-                    import os
                     os.fsync(f.fileno())
-                
-                if self.storage_path.exists():
-                    backup_path = self.storage_path.with_suffix('.json.bak')
+                if path.exists():
+                    backup_path = path.with_suffix(".json.bak")
                     try:
                         if backup_path.exists():
                             backup_path.unlink()
-                        self.storage_path.rename(backup_path)
+                        path.rename(backup_path)
                     except Exception:
                         pass
-                
-                tmp_path.rename(self.storage_path)
-                
-            except Exception as e:
-                logger.error(f"Ошибка сохранения алертов: {e}")
-                self._try_restore_backup()
+                os.replace(tmp_name, path)
+            except Exception:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+                raise
     
     def get_all_alerts(self) -> list[Asset]:
         """Возвращает копию списка активов (потокобезопасно)"""
         with self._lock:
             return list(self.assets)
     
-    def add_alert(self, symbol: str, price: float, direction: str, category: str = "linear", setup_note: str = "") -> tuple:
+    def add_alert(
+        self,
+        symbol: str,
+        price: float,
+        direction: str,
+        category: str = "linear",
+        setup_note: str = "",
+    ) -> tuple:
+
         """Добавляет алерт. Возвращает (success, replaced)"""
         symbol = symbol.upper()
         if direction not in ['up', 'down', 'any']:

@@ -276,8 +276,115 @@
 
 ---
 
-## Версия
+## Этап 3 — что было сделано (README, тесты, CI)
+
+### Цель
+
+Порядок в репо: документация, тесты, автоматическая проверка.
+
+### Артефакты
+
+1. **`README.md`** — описание, установка, запуск, переменные
+   окружения, команды бота, структура, разработка.
+
+2. **`tests/`** — pytest, без сетевых вызовов (~52 теста):
+   - `conftest.py` — фикстуры (`tmp_data_dir`, `alerts_path`,
+     `cooldowns_path`, `make_monitor`, `sample_klines_newest_first`).
+   - `test_indicators.py` — RSI, EMA, ATR. Зафиксировано:
+     - `calculate_rsi` / `calculate_rsi_series` ожидают
+       **Bybit-порядок** (новые первыми).
+     - `calculate_ema` — хронологический (старые первыми),
+       возвращает серию.
+     - `calculate_ema_from_bybit` — серия, `[0]` самое свежее.
+     - `calculate_atr_series` возвращает `len(klines) + 1`.
+   - `test_analyzer.py` — `evaluate_alert` на мок-свечах
+     (сигнатура: `symbol, level, direction, current_price,
+     alert_created_at, klines_15m, klines_4h`).
+   - `test_alerts.py` — `add_alert` / `remove_alert(symbol, price,
+     direction)` / `remove_all_alerts_for_symbol` / `clear_all`.
+     Структура: `Asset(symbol, category, alerts: list[AlertRule])`,
+     `AlertRule(price, direction, setup_note, created_at)`.
+     Нет `remove_alert(id)` — удаление по тройке.
+   - `test_cooldown.py` — `can_send` / `mark_sent` / `reset`
+     (сигнатуры `(symbol, price, direction)`). Поле внутри —
+     `cooldown_seconds`.
+   - `test_bybit_client.py` — `resolve_symbol` на мок-`get_ticker`.
+   - `test_monitor_ws.py` — семантика `_on_ticker_update`:
+     - Работает только для символов с Asset (в `_assets_by_symbol`
+       или через fallback на `alerts_manager.get_all_alerts()`).
+     - Для неизвестных — no-op, `AssetState` не создаётся.
+     - `_check_price_cross` вызывается всегда (когда есть Asset),
+       но алерт уходит только при наличии `prev_price`.
+     - После удаления Asset состояние в `states[symbol]`
+       сохраняется (защита от гонки WS-потока и refresh-потока).
+
+3. **`.github/workflows/ci.yml`** — ruff + pytest на push/PR,
+   Python 3.12, кэш pip.
+
+### Фиксы production-кода
+
+4. **`src/core/alerts.py::save()`** — переписан через
+   `tempfile.mkstemp` + `os.replace`. Восстановлены:
+   - `.bak`-бэкап перед записью,
+   - `to_dict()` при сериализации (был потерян при рефакторинге
+     на заглушку `data = {...}`, что давало
+     `TypeError: Object of type set is not JSON serializable`),
+   - `import time` в шапке.
+
+5. **`src/core/cooldown.py::save()`** — то же:
+   - `mkstemp` вместо `with open(tmp_path, 'w')` —
+     `WinError 183` на Windows при повторной записи.
+   - Восстановлены `with self._lock:` и `self._cleanup_locked()`,
+     потерянные при рефакторинге.
+   - `import os` / `import tempfile` в шапке.
+
+6. **`src/utils/data_exporter.py`** — удалён локальный дубль
+   `calculate_rsi` (F811). Используется `calculate_rsi_series`
+   из `indicators`.
+
+7. **`src/core/analyzer.py`** — `l` → `low` в `detect_pattern`
+   (E741, F821: после переименования часть использований
+   осталась со старым именем).
+
+8. **`main.py`**, **`src/telegram/handlers.py`**,
+   **`src/core/alerts.py`** — разбиты длинные строки (E501).
+
+9. **`pyproject.toml`**:
+   - `[tool.ruff]`: `select = ["E", "F", "I", "UP", "B"]`,
+     `ignore` для PLR* / PLC0415 / PLW* — стилевые придирки,
+     не баги.
+   - `[tool.pytest.ini_options]`: `testpaths = ["tests"]`,
+     `python_files = ["test_*.py"]`.
+   - `[tool.ruff.lint.per-file-ignores]`: `tests/**` — E501,
+     PLR2004, S101.
+
+### Проверено
+
+- `ruff check .` → `All checks passed!`.
+- `pytest -q` → 52 passed.
+- CI-конфиг локально воспроизводится.
+
+### Технический долг (перенесён в Этап 4)
+
+- **Гонка при параллельных `add_alert`** в `AlertsManager`:
+  `os.replace` на Windows может давать `WinError 5`, если
+  `save()` вызывается без `self._lock`. Warning в pytest
+  (`PytestUnhandledThreadExceptionWarning`) фиксирует это.
+  Решение: обернуть `save()` в `with self._lock:` **или**
+  заменить `Lock` на `RLock` и убрать lock из `add_alert`.
+- Параметры `volume_threshold`, `volume_cooldown` в `Monitor` —
+  legacy, не используются.
+- `_handle_export_alert` делает 3 REST-запроса в event loop —
+  стоит вынести в `asyncio.to_thread`.
+- `skip_note_keyboard` — не подключена.
+- Магические числа в `analyzer.py` (пороги RSI 40/60,
+  пин-бары 0.66/0.33) — вынести в `THRESHOLDS`.
+- `get_candle_volume_ratio` в `_check_price_cross` делает
+  отдельный REST-запрос — можно вычислить из `klines_15m`.
+
+  ## Версия
 
 - **v1.0** — Этап 1 закрыт (2026-09-29).
 - **v1.1** — Этап 2 закрыт (2026-09-29). WebSocket, `resolve_symbol`, кнопки алерта не затирают сообщение.
-- Следующий этап — порядок в репо (README, тесты, CI).
+- **v1.2** — Этап 3 закрыт (2026-09-29). README, ~52 pytest-теста, CI (ruff + pytest).
+- Следующий этап — 4 (risk, divergence, levels).

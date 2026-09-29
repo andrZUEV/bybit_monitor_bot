@@ -25,21 +25,65 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["src*"]
 
-[tool.ruff]
-line-length = 100
-target-version = "py310"
-
-[tool.pytest.ini_options]
-minversion = "8.0"
-testpaths = ["tests"]           # ВАЖНО: папка должна называться tests, не test
-python_files = ["test_*.py"]
-addopts = "-ra -q --strict-markers"
-filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "*.egg-info",
+]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "PL"]
-ignore = ["PLR0913"]  # много аргументов — бывает нужно
+# E/F — реальные ошибки и стиль.
+# I — сортировка импортов.
+# UP — современный синтаксис (List → list и т.п.).
+# B — баги (B008 и т.п.).
+select = ["E", "F", "I", "UP", "B"]
+
+ignore = [
+    # Длинные строки — оставляем как warning, но не блокируем CI.
+    # Если хочешь строго — убери E501 из ignore.
+    # "E501",
+
+    # Импорты внутри функций — осознанный приём (ленивая загрузка,
+    # избегание циклических зависимостей).
+    "PLC0415",
+
+    # Магические числа — в analyzer/handlers их много по делу
+    # (пороги RSI, объёмы, форматирование). Выносить в константы —
+    # задача Этапа 4, не сейчас.
+    "PLR2004",
+
+    # Слишком много return / branches / statements — это про
+    # большие функции, рефакторинг которых — отдельная задача.
+    "PLR0911",
+    "PLR0912",
+    "PLR0915",
+    "PLR0917",
+
+    # global — осознанно в main.py для telegram_bot.
+    "PLW0603",
+
+    # dataclass без __hash__ — AlertRule, не используется как ключ.
+    "PLW1641",
+
+    # Перезапись loop-переменной — стилистика, не баг.
+    "PLW2901",
+
+    # Merge comparisons — микростилистика.
+    "PLR1714",
+    "PLR5501",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# В тестах магические числа и assert — норма.
+"tests/**" = ["E501", "PLR2004", "S101"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra -q --strict-markers"

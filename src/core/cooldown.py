@@ -5,6 +5,8 @@
 
 import json
 import logging
+import os
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -47,7 +49,7 @@ class CooldownManager:
                 self.cooldowns = {}
                 return
             try:
-                with open(self.storage_path, 'r', encoding='utf-8') as f:
+                with open(self.storage_path, encoding='utf-8') as f:
                     data = json.load(f)
                 self.cooldowns = data.get('cooldowns', {})
                 # Сразу чистим старые записи при загрузке
@@ -56,28 +58,36 @@ class CooldownManager:
                 logger.error(f"Ошибка загрузки кулдаунов: {e}")
                 self.cooldowns = {}
     
-    def save(self):
-        """
-        Атомарное сохранение кулдаунов.
-        Потокобезопасно через threading.Lock.
+    def save(self) -> None:
+        """Атомарное сохранение кулдаунов через mkstemp + os.replace.
+
+        На Windows os.replace падает, если tmp уже существует —
+        используем уникальные имена. Потокобезопасно, чистит старые
+        записи перед сохранением.
         """
         with self._lock:
             try:
-                # Чистим старые записи перед сохранением
                 self._cleanup_locked()
-                
-                data = {'cooldowns': self.cooldowns}
-                
-                # Пишем в .tmp, потом атомарно переименовываем
-                tmp_path = self.storage_path.with_suffix('.json.tmp')
-                with open(tmp_path, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-                    f.flush()
-                    import os
-                    os.fsync(f.fileno())
-                
-                tmp_path.rename(self.storage_path)
-                
+
+                path = Path(self.storage_path)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                data = {"cooldowns": self.cooldowns}
+
+                fd, tmp_name = tempfile.mkstemp(
+                    prefix=path.name + ".", suffix=".tmp", dir=str(path.parent),
+                )
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    os.replace(tmp_name, path)
+                except Exception:
+                    try:
+                        os.unlink(tmp_name)
+                    except OSError:
+                        pass
+                    raise
             except Exception as e:
                 logger.error(f"Ошибка сохранения кулдаунов: {e}")
     

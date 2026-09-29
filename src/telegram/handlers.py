@@ -106,7 +106,8 @@ class TelegramHandlers:
         if not symbol:
             await update.message.reply_text(
                 f"❌ Символ <code>{user_input}</code> не найден на Bybit.\n"
-                f"Можно писать сокращённо: <code>eth</code>, <code>ETH</code>, <code>ETHUSDT</code>.",
+                "Можно писать сокращённо: "
+                "<code>eth</code>, <code>ETH</code>, <code>ETHUSDT</code>.",
                 parse_mode="HTML",
             )
             return
@@ -412,7 +413,8 @@ class TelegramHandlers:
         elif data == "menu_add":
             self.user_state[chat_id] = {"step": "waiting_symbol"}
             await query.edit_message_text(
-                "➕ <b>Добавить алерт</b>\n\nВведите тикер (например, <code>BTCUSDT</code> или <code>BTC</code>):",
+                "➕ <b>Добавить алерт</b>\n\n"
+                "Введите тикер (например, <code>BTCUSDT</code> или <code>BTC</code>):",
                 parse_mode="HTML",
                 reply_markup=keyboards.cancel_keyboard(),
             )
@@ -849,7 +851,11 @@ class TelegramHandlers:
                 price_str = f"{asset.price:,.6f}"
 
             text += f"<b>{i:2d}.</b> <code>{asset.symbol}</code>\n"
-            text += f"    💰 <b>{price_str}</b> $ | {change_emoji} <b>{asset.price_change_24h:+.2f}%</b>\n"
+            change_str = f"{asset.price_change_24h:+.2f}%"
+            text += (
+                f"    💰 <b>{price_str}</b> $ | "
+                f"{change_emoji} <b>{change_str}</b>\n"
+            )
             text += f"    📊 Объем: <b>{vol_str}</b>\n\n"
 
         text += "━" * 30 + "\n"
