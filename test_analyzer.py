@@ -55,3 +55,4 @@ analysis_short = analyze_candle_confirmation(
 )
 
 print(format_confirmation_message(analysis_short))
+

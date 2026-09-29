@@ -560,7 +560,13 @@ class TelegramHandlers:
             await query.answer("Команда в разработке", show_alert=False)
 
     async def _handle_delete_alert(self, update: Update, data: str):
-        """Удаление одного алерта. Формат: del|SYMBOL|PRICE|DIRECTION."""
+        """
+        Удаление одного алерта. Формат: del|SYMBOL|PRICE|DIRECTION.
+
+        Исходное сообщение алерта не редактируется по тексту,
+        но у него убирается клавиатура (чтобы кнопки нельзя было нажать повторно).
+        Статус — отдельным сообщением.
+        """
         query = update.callback_query
         parts = data.split("|")
         if len(parts) != 4:
@@ -575,7 +581,14 @@ class TelegramHandlers:
 
         removed = self.alerts_manager.remove_alert(symbol, price, direction)
         if removed:
-            await query.edit_message_text(
+            # Убираем клавиатуру у алерта — кнопки уже неактуальны.
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+            # Статус — новым сообщением, чтобы алерт остался в чате.
+            await query.message.reply_text(
                 f"🗑 Удалён алерт <b>{symbol}</b> @ {price}",
                 parse_mode="HTML",
                 reply_markup=keyboards.main_menu_keyboard(),
@@ -584,16 +597,23 @@ class TelegramHandlers:
             await query.answer("Алерт не найден", show_alert=True)
 
     async def _handle_export_alert(self, update: Update, data: str):
-        """Экспорт данных по одному активу."""
+        """
+        Экспорт данных по одному активу.
+
+        ВАЖНО: исходное сообщение алерта НЕ редактируется. Статус и файл
+        отправляются новыми сообщениями, чтобы алерт остался в чате.
+        """
         query = update.callback_query
         symbol = data.replace("export_alert_", "").upper()
 
+        # Статус — отдельным сообщением (не редактируем алерт).
         try:
-            await query.edit_message_text(
+            status_msg = await query.message.reply_text(
                 f"⏳ Выгружаю данные <b>{symbol}</b>...", parse_mode="HTML"
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Не удалось отправить статусное сообщение: {e}")
+            status_msg = None
 
         filepath = self._generate_export_file([symbol])
 
@@ -604,28 +624,42 @@ class TelegramHandlers:
                         document=InputFile(f, filename=os.path.basename(filepath)),
                         caption=f"✅ Данные по <b>{symbol}</b>\n15m / 1H / 4H + RSI",
                     )
-                await query.edit_message_text(
-                    f"✅ Файл по <b>{symbol}</b> отправлен",
-                    parse_mode="HTML",
-                    reply_markup=keyboards.main_menu_keyboard(),
-                )
+                if status_msg is not None:
+                    try:
+                        await status_msg.edit_text(
+                            f"✅ Файл по <b>{symbol}</b> отправлен",
+                            parse_mode="HTML",
+                        )
+                    except Exception:
+                        pass
             except Exception as e:
                 logger.error(f"Ошибка отправки файла {symbol}: {e}", exc_info=True)
-                await query.edit_message_text(
-                    f"❌ Не удалось отправить файл по {symbol}",
-                    reply_markup=keyboards.main_menu_keyboard(),
-                )
+                if status_msg is not None:
+                    try:
+                        await status_msg.edit_text(
+                            f"❌ Не удалось отправить файл по {symbol}"
+                        )
+                    except Exception:
+                        pass
             finally:
                 try:
                     os.remove(filepath)
                 except Exception:
                     pass
         else:
-            await query.edit_message_text(
-                f"❌ Не удалось получить данные по <b>{symbol}</b>",
-                parse_mode="HTML",
-                reply_markup=keyboards.main_menu_keyboard(),
-            )
+            if status_msg is not None:
+                try:
+                    await status_msg.edit_text(
+                        f"❌ Не удалось получить данные по <b>{symbol}</b>",
+                        parse_mode="HTML",
+                    )
+                except Exception:
+                    pass
+            else:
+                await query.message.reply_text(
+                    f"❌ Не удалось получить данные по <b>{symbol}</b>",
+                    parse_mode="HTML",
+                )
 
     # ==================== ЭКРАНЫ ====================
 
