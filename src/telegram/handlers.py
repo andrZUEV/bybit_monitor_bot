@@ -832,7 +832,8 @@ class TelegramHandlers:
                 for ticker in tickers:
                     for tf, tf_name in [("15", "15m"), ("60", "1H"), ("240", "4H")]:
                         try:
-                            klines = self.bybit_client.get_klines(ticker, "linear", tf, 150)
+                            limit = Config.EXPORT_LIMITS.get(tf, 150)
+                            klines = self.bybit_client.get_klines(ticker, "linear", tf, limit)
                             if not klines:
                                 continue
 

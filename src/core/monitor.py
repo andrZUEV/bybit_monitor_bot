@@ -33,8 +33,8 @@ logger = logging.getLogger(__name__)
 # Лимиты свечей для анализа.
 # 15m: 250 свечей = ~62ч (хватает для count_touches за 48ч)
 # 4H:  100 свечей = ~16 дней (для EMA50 + наклон)
-KLINES_15M_LIMIT = 250
-KLINES_4H_LIMIT = 100
+KLINES_15M_LIMIT = Config.EXPORT_LIMITS["15"]   # 300
+KLINES_4H_LIMIT = Config.EXPORT_LIMITS["240"]   # 400
 VOLUME_PERIODS = 20
 
 
