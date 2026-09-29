@@ -107,21 +107,16 @@ class TelegramHandlers:
         if not symbol.endswith("USDT"):
             symbol += "USDT"
 
-        await update.message.reply_text(f"⏳ Выгружаю данные {symbol}...")
-        filepath = self._generate_export_file([symbol])
+        # Проверяем, что символ существует на Bybit
+        if self.bybit_client.get_ticker(symbol, "linear") is None:
+            await update.message.reply_text(
+                f"❌ Символ <code>{symbol}</code> не найден на Bybit.\n"
+                f"Проверьте написание.",
+                parse_mode="HTML",
+            )
+            return
 
-        if filepath and os.path.exists(filepath):
-            with open(filepath, "rb") as f:
-                await update.message.reply_document(
-                    document=InputFile(f, filename=os.path.basename(filepath)),
-                    caption=(
-                        f"✅ {symbol} данные выгружены\n"
-                        f"15m: 150 свечей\n1H: 100 свечей\n4H: 70 свечей"
-                    ),
-                )
-            os.remove(filepath)
-        else:
-            await update.message.reply_text("❌ Не удалось получить данные. Попробуйте позже.")
+        await update.message.reply_text(f"⏳ Выгружаю данные {symbol}...")
 
     # ==================== ТЕКСТОВЫЕ СООБЩЕНИЯ ====================
 
@@ -269,14 +264,44 @@ class TelegramHandlers:
             )
             return
 
-        await update.message.reply_text(f"⏳ Генерирую файл для {len(valid_tickers)} тикеров...")
-        filepath = self._generate_export_file(valid_tickers)
+        # Предварительная проверка: отбрасываем символы, которых нет на Bybit
+        checked_tickers = []
+        invalid_tickers = []
+        for ticker in valid_tickers:
+            probe = self.bybit_client.get_ticker(ticker, "linear")
+            if probe is None:
+                invalid_tickers.append(ticker)
+            else:
+                checked_tickers.append(ticker)
+
+        if not checked_tickers:
+            invalid_msg = ", ".join(invalid_tickers)
+            await update.message.reply_text(
+                f"❌ Не найдено ни одного валидного тикера на Bybit:\n"
+                f"<code>{invalid_msg}</code>\n\n"
+                f"Проверьте написание (например, <code>XRP</code>, а не <code>XPR</code>).",
+                parse_mode="HTML",
+                reply_markup=keyboards.main_menu_keyboard(),
+            )
+            self._reset_state(chat_id)
+            return
+
+        await update.message.reply_text(
+            f"⏳ Генерирую файл для {len(checked_tickers)} тикеров..."
+        )
+        filepath = self._generate_export_file(checked_tickers)
 
         if filepath and os.path.exists(filepath):
+            caption = f"✅ Данные выгружены для: {', '.join(checked_tickers)}"
+            if invalid_tickers:
+                caption += (
+                    f"\n\n⚠️ Пропущены (не найдены на Bybit): "
+                    f"{', '.join(invalid_tickers)}"
+                )
             with open(filepath, "rb") as f:
                 await update.message.reply_document(
                     document=InputFile(f, filename=os.path.basename(filepath)),
-                    caption=f"✅ Данные выгружены для: {', '.join(valid_tickers)}",
+                    caption=caption,
                 )
             os.remove(filepath)
         else:
