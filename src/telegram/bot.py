@@ -7,27 +7,25 @@ Telegram бот — запуск и отправка уведомлений.
 - Явный Optional[BybitClient] в сигнатуре
 """
 
-import json
-import sys
-import os
-import logging
-import threading
-import requests
 import asyncio
-from typing import Optional
+import json
+import logging
+import sys
+import threading
 
-from telegram import Update, InlineKeyboardMarkup
+import requests
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     filters,
 )
 
-from src.core.alerts import AlertsManager
 from src.api.bybit_client import BybitClient
+from src.core.alerts import AlertsManager
 from src.telegram.handlers import TelegramHandlers
+from telegram import InlineKeyboardMarkup, Update
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +40,7 @@ class TelegramBot:
         token: str,
         allowed_chat_id: str,
         alerts_manager: AlertsManager,
-        bybit_client: Optional[BybitClient] = None,
+        bybit_client: BybitClient | None = None,
     ):
         self.token = token
         self.allowed_chat_id = allowed_chat_id
@@ -57,8 +55,8 @@ class TelegramBot:
             bybit_client=self.bybit_client,
         )
 
-        self._application: Optional[Application] = None
-        self._thread: Optional[threading.Thread] = None
+        self._application: Application | None = None
+        self._thread: threading.Thread | None = None
         self._running = True
 
     # ==================== СБОРКА ====================

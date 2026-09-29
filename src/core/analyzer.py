@@ -9,13 +9,13 @@
 - Объём берётся по ТЕКУЩЕЙ свече [0] как раннее предупреждение
 """
 
-import time
 import logging
-from typing import Dict, Any, List, Optional
+import time
+from typing import Any
 
 from src.utils.indicators import (
-    calculate_rsi,
     calculate_ema_from_bybit,
+    calculate_rsi,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ VOLUME_AVG_PERIODS = 20
 
 # ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 
-def parse_klines(klines: List[List]) -> List[Dict[str, float]]:
+def parse_klines(klines: list[list]) -> list[dict[str, float]]:
     """
     Парсит сырые klines в список словарей.
     Порядок сохраняется как есть: candles[0] — самая свежая свеча.
@@ -77,10 +77,10 @@ def parse_klines(klines: List[List]) -> List[Dict[str, float]]:
 
 
 def detect_pattern(
-    candle: Dict[str, float],
-    prev_candle: Dict[str, float],
+    candle: dict[str, float],
+    prev_candle: dict[str, float],
     direction: str,
-) -> Optional[str]:
+) -> str | None:
     """Определяет разворотный паттерн на свече."""
     o, h, l, c = candle["open"], candle["high"], candle["low"], candle["close"]
     po, pc = prev_candle["open"], prev_candle["close"]
@@ -120,7 +120,7 @@ def detect_pattern(
 
 
 def has_wick_beyond_level(
-    candle: Dict[str, float], level: float, direction: str
+    candle: dict[str, float], level: float, direction: str
 ) -> bool:
     """Проверяет, проколола ли тень уровень."""
     if direction == "up":
@@ -128,7 +128,7 @@ def has_wick_beyond_level(
     return candle["high"] > level
 
 
-def close_in_correct_third(candle: Dict[str, float], direction: str) -> bool:
+def close_in_correct_third(candle: dict[str, float], direction: str) -> bool:
     """Закрылась ли свеча в нужной трети диапазона."""
     range_hl = candle["high"] - candle["low"]
     if range_hl == 0:
@@ -141,7 +141,7 @@ def close_in_correct_third(candle: Dict[str, float], direction: str) -> bool:
 
 
 def count_touches(
-    candles: List[Dict[str, float]],
+    candles: list[dict[str, float]],
     level: float,
     timeframe_minutes: int = 15,
     lookback_hours: int = 48,
@@ -176,7 +176,7 @@ def count_touches(
     return touches
 
 
-def get_htf_trend(candles_4h: List[Dict[str, float]]) -> str:
+def get_htf_trend(candles_4h: list[dict[str, float]]) -> str:
     """
     Определяет тренд на 4H по EMA50.
 
@@ -210,7 +210,7 @@ def get_htf_trend(candles_4h: List[Dict[str, float]]) -> str:
 
 
 def calc_volume_ratio(
-    candles: List[Dict[str, float]], periods: int = VOLUME_AVG_PERIODS
+    candles: list[dict[str, float]], periods: int = VOLUME_AVG_PERIODS
 ) -> float:
     """
     Отношение объёма ТЕКУЩЕЙ свечи [0] к среднему за предыдущие `periods`.
@@ -238,9 +238,9 @@ def evaluate_alert(
     direction: str,
     current_price: float,
     alert_created_at: float,
-    klines_15m: List[List],
-    klines_4h: List[List],
-) -> Dict[str, Any]:
+    klines_15m: list[list],
+    klines_4h: list[list],
+) -> dict[str, Any]:
     """
     Оценивает алерт по системе весов и штрафов.
 
@@ -271,8 +271,8 @@ def evaluate_alert(
     prev_closed = candles_15m[2]
 
     score = 0.0
-    signals: List[str] = []
-    filters: List[str] = []
+    signals: list[str] = []
+    filters: list[str] = []
 
     # 1. Паттерн
     pattern = detect_pattern(last_closed, prev_closed, direction)
@@ -396,7 +396,7 @@ def format_alert_message(
     level: float,
     direction: str,
     current_price: float,
-    evaluation: Dict[str, Any],
+    evaluation: dict[str, Any],
     setup_note: str = "",
 ) -> str:
     """Форматирует сообщение алерта в HTML для Telegram."""
@@ -431,12 +431,12 @@ def format_alert_message(
 # ==================== СТАРЫЕ ОБЁРТКИ (обратная совместимость) ====================
 
 def analyze_candle_confirmation(
-    klines: List[List],
+    klines: list[list],
     level: float,
     direction: str,
     volume_ratio: float = 0.0,
     interval_minutes: int = 15,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Старая функция. Делегирует в evaluate_alert."""
     klines_4h = klines[:30] if len(klines) >= 30 else klines
 
@@ -451,7 +451,7 @@ def analyze_candle_confirmation(
     )
 
 
-def format_confirmation_message(analysis: Dict[str, Any]) -> str:
+def format_confirmation_message(analysis: dict[str, Any]) -> str:
     """Старая функция. Делегирует в format_alert_message."""
     return format_alert_message(
         symbol="UNKNOWN",

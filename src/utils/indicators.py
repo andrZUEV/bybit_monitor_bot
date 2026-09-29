@@ -6,12 +6,10 @@
 разворачивают его для корректных расчётов.
 """
 
-from typing import List, Optional, Tuple
-
 
 # ==================== RSI ====================
 
-def calculate_rsi(closes: List[float], period: int = 14) -> Optional[float]:
+def calculate_rsi(closes: list[float], period: int = 14) -> float | None:
     """
     Расчёт RSI по формуле Wilder. Возвращает ОДНО последнее значение.
 
@@ -33,9 +31,9 @@ def calculate_rsi(closes: List[float], period: int = 14) -> Optional[float]:
 
 
 def calculate_rsi_series(
-    closes: List[float],
+    closes: list[float],
     period: int = 14
-) -> List[Optional[float]]:
+) -> list[float | None]:
     """
     Расчёт серии RSI по формуле Wilder (для экспорта в CSV).
 
@@ -63,7 +61,7 @@ def calculate_rsi_series(
     avg_gain = sum(gains[:period]) / period
     avg_loss = sum(losses[:period]) / period
 
-    rsi_values_chrono: List[Optional[float]] = [None] * period
+    rsi_values_chrono: list[float | None] = [None] * period
 
     if avg_loss == 0:
         rsi_values_chrono.append(100.0)
@@ -87,7 +85,7 @@ def calculate_rsi_series(
 
 # ==================== EMA ====================
 
-def calculate_ema(values: List[float], period: int) -> List[float]:
+def calculate_ema(values: list[float], period: int) -> list[float]:
     """
     Расчёт EMA.
 
@@ -114,7 +112,7 @@ def calculate_ema(values: List[float], period: int) -> List[float]:
     return ema
 
 
-def calculate_ema_from_bybit(values: List[float], period: int) -> List[float]:
+def calculate_ema_from_bybit(values: list[float], period: int) -> list[float]:
     """
     Обёртка для массива от Bybit (новые первые).
     Разворачивает, считает EMA, возвращает в исходном порядке.
@@ -129,11 +127,11 @@ def calculate_ema_from_bybit(values: List[float], period: int) -> List[float]:
 # ==================== ATR (задел под стратегию) ====================
 
 def calculate_atr(
-    highs: List[float],
-    lows: List[float],
-    closes: List[float],
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
     period: int = 14
-) -> Optional[float]:
+) -> float | None:
     """
     Расчёт ATR по методу Wilder. Возвращает ОДНО последнее значение.
 
@@ -157,11 +155,11 @@ def calculate_atr(
 
 
 def calculate_atr_series(
-    highs: List[float],
-    lows: List[float],
-    closes: List[float],
+    highs: list[float],
+    lows: list[float],
+    closes: list[float],
     period: int = 14
-) -> List[Optional[float]]:
+) -> list[float | None]:
     """
     Серия ATR (новые первые).
 
@@ -190,7 +188,7 @@ def calculate_atr_series(
             abs(l[i] - prev_close),
         ))
 
-    atr_chrono: List[Optional[float]] = [None] * period
+    atr_chrono: list[float | None] = [None] * period
     # Первое значение ATR = среднее TR за первые period свечей
     atr_chrono.append(sum(tr[:period]) / period)
 
@@ -204,10 +202,10 @@ def calculate_atr_series(
 # ==================== Bollinger Bands (задел, опционально) ====================
 
 def calculate_bollinger(
-    closes: List[float],
+    closes: list[float],
     period: int = 20,
     std_mult: float = 2.0
-) -> Tuple[Optional[float], Optional[float], Optional[float]]:
+) -> tuple[float | None, float | None, float | None]:
     """
     Bollinger Bands (последнее значение).
 

@@ -5,11 +5,12 @@
 Поддерживаются умные ретраи для временных ошибок (лимиты, 5xx).
 """
 
-import time
 import logging
-import requests
+import time
 from dataclasses import dataclass
-from typing import Optional, Dict, Any, List
+from typing import Any
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +61,9 @@ class BybitClient:
         self,
         method: str,
         endpoint: str,
-        params: Optional[Dict[str, Any]] = None,
-        json_data: Optional[Dict[str, Any]] = None,
-    ) -> Optional[Dict[str, Any]]:
+        params: dict[str, Any] | None = None,
+        json_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
         """
         HTTP-запрос с ретраями (экспоненциальная задержка).
 
@@ -121,7 +122,7 @@ class BybitClient:
 
     def get_ticker(
         self, symbol: str, category: str = "linear"
-    ) -> Optional[TickerData]:
+    ) -> TickerData | None:
         """Возвращает текущую цену и 24h-объём по символу."""
         params = {"category": category, "symbol": symbol}
         result = self._make_request("GET", "/v5/market/tickers", params=params)
@@ -140,7 +141,7 @@ class BybitClient:
 
     def resolve_symbol(
         self, user_input: str, category: str = "linear"
-    ) -> Optional[str]:
+    ) -> str | None:
         """
         Приводит пользовательский ввод к валидному символу Bybit.
 
@@ -181,7 +182,7 @@ class BybitClient:
         category: str,
         interval: str,
         limit: int = 200,
-    ) -> Optional[List[List]]:
+    ) -> list[list] | None:
         """
         Возвращает сырые klines от Bybit.
 
@@ -205,7 +206,7 @@ class BybitClient:
         category: str,
         interval: str,
         periods: int = 20,
-    ) -> Optional[Dict[str, float]]:
+    ) -> dict[str, float] | None:
         """
         Отношение объёма ТЕКУЩЕЙ свечи к среднему за `periods` предыдущих.
 
@@ -235,7 +236,7 @@ class BybitClient:
         min_volume_usd: float = 1_000_000,
         min_change_abs: float = 3.0,
         limit: int = 50,
-    ) -> List[ScreenerAsset]:
+    ) -> list[ScreenerAsset]:
         """
         Список активов, у которых за 24ч:
           - объём >= min_volume_usd
@@ -246,7 +247,7 @@ class BybitClient:
         params = {"category": category, "sort": sort_by, "limit": limit}
         result = self._make_request("GET", "/v5/market/tickers", params=params)
 
-        assets: List[ScreenerAsset] = []
+        assets: list[ScreenerAsset] = []
         if not result or "list" not in result:
             return assets
 

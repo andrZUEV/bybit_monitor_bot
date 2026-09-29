@@ -5,10 +5,10 @@
 
 import json
 import logging
-import time
 import threading
+import time
 from pathlib import Path
-from typing import Dict, Any
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ class CooldownManager:
         self.cooldown_seconds = cooldown_minutes * 60
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.cooldowns: Dict[str, float] = {}
+        self.cooldowns: dict[str, float] = {}
         self._lock = threading.Lock()
         self.load()
     
@@ -131,7 +131,7 @@ class CooldownManager:
             self.cooldowns = {}
         self.save()
     
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """Возвращает статистику по кулдаунам"""
         with self._lock:
             now = time.time()

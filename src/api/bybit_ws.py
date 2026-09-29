@@ -26,7 +26,7 @@ import json
 import logging
 import threading
 import time
-from typing import Callable, Iterable, Optional, Set
+from collections.abc import Callable, Iterable
 
 import websocket  # websocket-client
 
@@ -56,15 +56,15 @@ class BybitWebSocketClient:
         self.reconnect_delay = reconnect_delay
 
         # Текущий набор подписок (символы в верхнем регистре).
-        self._subscribed: Set[str] = set()
+        self._subscribed: set[str] = set()
         # Множество, которое хотим иметь. Обновляется из set_symbols().
-        self._desired: Set[str] = set()
+        self._desired: set[str] = set()
         self._subs_lock = threading.Lock()
 
         # Управление потоком.
         self._stop_event = threading.Event()
-        self._thread: Optional[threading.Thread] = None
-        self._ws: Optional[websocket.WebSocket] = None
+        self._thread: threading.Thread | None = None
+        self._ws: websocket.WebSocket | None = None
 
     # ==================== ПУБЛИЧНЫЙ API ====================
 

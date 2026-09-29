@@ -21,20 +21,20 @@
 - CooldownManager получает путь из Config
 """
 
-import sys
-import os
-import time
 import logging
+import os
+import sys
 import threading
-from typing import Callable, Optional, Dict, Any, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 # Добавляем корень проекта в путь (для запуска python main.py)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from src.api.bybit_client import BybitClient, TickerData
-from src.core.alerts import AlertsManager, Asset, AlertRule
+from src.core.alerts import AlertsManager, Asset
 from src.core.cooldown import CooldownManager
 from src.utils.config import Config
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -66,16 +66,16 @@ class AlertEvent:
     category: str
     current_price: float
     message: str
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
     reply_markup: Any = None
 
 
 @dataclass
 class AssetState:
-    prev_price: Optional[float] = None
-    prev_volume: Optional[float] = None
+    prev_price: float | None = None
+    prev_volume: float | None = None
     last_volume_alert_time: float = 0
-    triggered_alerts: Dict[str, bool] = field(default_factory=dict)
+    triggered_alerts: dict[str, bool] = field(default_factory=dict)
 
 
 # ==================== МОНИТОР ====================
@@ -85,7 +85,7 @@ class Monitor:
         self,
         alerts_manager: AlertsManager,
         on_alert_callback: Callable[[AlertEvent], None],
-        bybit_client: Optional[BybitClient] = None,
+        bybit_client: BybitClient | None = None,
         # REST-fallback:
         poll_interval: float = 4.0,
         # legacy, не используется:
@@ -98,7 +98,7 @@ class Monitor:
         candle_volume_multiplier: float = 3.0,
         alert_cooldown_minutes: int = 25,
         # WS:
-        ws_client: Optional[Any] = None,   # BybitWebSocketClient (ленивый импорт)
+        ws_client: Any | None = None,   # BybitWebSocketClient (ленивый импорт)
         use_websocket: bool = True,
     ):
         self.alerts_manager = alerts_manager
@@ -122,15 +122,15 @@ class Monitor:
             storage_path=str(Config.COOLDOWNS_FILE),
         )
 
-        self.states: Dict[str, AssetState] = {}
+        self.states: dict[str, AssetState] = {}
         # Кэш: symbol -> Asset. Обновляется в _refresh_subscriptions().
-        self._assets_by_symbol: Dict[str, Asset] = {}
+        self._assets_by_symbol: dict[str, Asset] = {}
         self._cache_lock = threading.Lock()
 
         # Управление жизненным циклом
         self._running = False
         self._stop_event = threading.Event()
-        self._refresh_thread: Optional[threading.Thread] = None
+        self._refresh_thread: threading.Thread | None = None
 
         # REST-polling счётчик (для fallback)
         self._poll_count = 0
@@ -171,9 +171,7 @@ class Monitor:
 
             if not (crossed_up or crossed_down):
                 # Сброс флага, если цена отошла от уровня
-                if direction == "up" and curr < target:
-                    state.triggered_alerts[alert_key] = False
-                elif direction == "down" and curr > target:
+                if direction == "up" and curr < target or direction == "down" and curr > target:
                     state.triggered_alerts[alert_key] = False
                 elif direction == "any":
                     distance = abs(curr - target) / target if target > 0 else 0
@@ -332,7 +330,7 @@ class Monitor:
         self.alerts_manager.load()
         assets = self.alerts_manager.get_all_alerts()
 
-        new_cache: Dict[str, Asset] = {a.symbol: a for a in assets}
+        new_cache: dict[str, Asset] = {a.symbol: a for a in assets}
         symbols = set(new_cache.keys())
 
         with self._cache_lock:

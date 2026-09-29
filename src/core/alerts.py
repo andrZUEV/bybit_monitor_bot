@@ -4,11 +4,11 @@
 
 import json
 import logging
-import time
 import threading
-from typing import List, Optional, Dict, Any
-from dataclasses import dataclass, asdict, field
+import time
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +21,11 @@ class AlertRule:
     setup_note: str = ""
     created_at: float = field(default_factory=time.time)
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> Optional['AlertRule']:
+    def from_dict(cls, data: dict[str, Any]) -> Optional['AlertRule']:
         """Безопасное создание из словаря с игнорированием битых записей"""
         try:
             # Если data - это строка (например, случайно записалось "up" вместо dict), игнорируем
@@ -58,9 +58,9 @@ class Asset:
     """Актив с набором правил алертов"""
     symbol: str
     category: str
-    alerts: List[AlertRule]
+    alerts: list[AlertRule]
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             'symbol': self.symbol,
             'category': self.category,
@@ -68,7 +68,7 @@ class Asset:
         }
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'Asset':
+    def from_dict(cls, data: dict[str, Any]) -> 'Asset':
         """Безопасное создание актива с фильтрацией битых алертов"""
         alerts = []
         raw_alerts = data.get('alerts', [])
@@ -97,7 +97,7 @@ class AlertsManager:
     def __init__(self, storage_path: str = "data/alerts.json"):
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.assets: List[Asset] = []
+        self.assets: list[Asset] = []
         self._lock = threading.RLock()
         self.load()
     
@@ -178,7 +178,7 @@ class AlertsManager:
                 logger.error(f"Ошибка сохранения алертов: {e}")
                 self._try_restore_backup()
     
-    def get_all_alerts(self) -> List[Asset]:
+    def get_all_alerts(self) -> list[Asset]:
         """Возвращает копию списка активов (потокобезопасно)"""
         with self._lock:
             return list(self.assets)

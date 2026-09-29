@@ -2,13 +2,12 @@
 Модуль выгрузки свечных данных в текстовый файл
 """
 
-import sys
-import os
-import time
 import logging
-from pathlib import Path
+import os
+import sys
+import time
 from datetime import datetime
-from typing import List, Optional, Dict
+from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
@@ -18,7 +17,7 @@ from src.utils.indicators import calculate_rsi
 logger = logging.getLogger(__name__)
 
 
-def calculate_rsi(closes: List[float], period: int = 14) -> List[Optional[float]]:
+def calculate_rsi(closes: list[float], period: int = 14) -> list[float | None]:
     """
     Расчёт RSI(14) по формуле Wilder для списка цен закрытия
     
@@ -69,7 +68,7 @@ class DataExporter:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         
         # Кулдаун для предотвращения спама API
-        self._last_export_time: Dict[str, float] = {}
+        self._last_export_time: dict[str, float] = {}
         self._export_cooldown = 30  # 30 секунд между запросами для одного символа
     
     def can_export(self, symbol: str) -> bool:
@@ -86,7 +85,7 @@ class DataExporter:
         self,
         symbol: str,
         category: str = "linear"
-    ) -> Optional[Path]:
+    ) -> Path | None:
         """
         Выгружает данные по символу на 3 таймфреймах
         
@@ -165,9 +164,9 @@ class DataExporter:
     
     def export_multiple_symbols(
         self,
-        symbols: List[str],
+        symbols: list[str],
         category: str = "linear"
-    ) -> Optional[Path]:
+    ) -> Path | None:
         """Выгружает данные по нескольким символам в один файл"""
         if not symbols:
             return None
@@ -178,7 +177,7 @@ class DataExporter:
             filepath = self.data_dir / filename
             
             with open(filepath, 'w', encoding='utf-8') as f:
-                f.write(f"=== Multi-Symbol Export ===\n")
+                f.write("=== Multi-Symbol Export ===\n")
                 f.write(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"Symbols: {', '.join(symbols)}\n")
                 f.write(f"Category: {category}\n\n")

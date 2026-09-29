@@ -8,21 +8,21 @@
 - Быстрое однострочное и массовое добавление — просто +USDT без REST (не тормозим).
 """
 
+import csv
+import logging
 import os
 import time
-import logging
-import csv
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Any
 
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from telegram.ext import ContextTypes
 
-from src.core.alerts import AlertsManager
 from src.api.bybit_client import BybitClient
+from src.core.alerts import AlertsManager
 from src.telegram import keyboards
 from src.utils.config import Config
 from src.utils.indicators import calculate_rsi_series
+from telegram import InputFile, Update
 
 logger = logging.getLogger(__name__)
 
@@ -37,10 +37,10 @@ class TelegramHandlers:
         self.alerts_manager = alerts_manager
         self.allowed_chat_id = str(allowed_chat_id)
         self.bybit_client = bybit_client
-        self.user_state: Dict[int, Dict[str, Any]] = {}
-        self._screener_cache: Dict[str, tuple] = {}
+        self.user_state: dict[int, dict[str, Any]] = {}
+        self._screener_cache: dict[str, tuple] = {}
         self._screener_cache_ttl = 120
-        self._last_screener_results: List = []
+        self._last_screener_results: list = []
 
     # ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
 
@@ -244,8 +244,8 @@ class TelegramHandlers:
     async def _handle_export_tickers(self, update: Update, text: str, chat_id: int):
         """Обработка ввода тикеров для экспорта."""
         raw_tickers = text.replace(",", " ").split()
-        checked_tickers: List[str] = []
-        invalid_tickers: List[str] = []
+        checked_tickers: list[str] = []
+        invalid_tickers: list[str] = []
 
         for t in raw_tickers:
             t = t.strip()
@@ -295,7 +295,7 @@ class TelegramHandlers:
         self._reset_state(chat_id)
 
     async def _finalize_add_alert(
-        self, update: Update, state: Dict[str, Any], note: str, chat_id: int
+        self, update: Update, state: dict[str, Any], note: str, chat_id: int
     ):
         """Завершает добавление алерта после выбора направления и заметки."""
         symbol = state["symbol"]
@@ -326,7 +326,7 @@ class TelegramHandlers:
 
         self._reset_state(chat_id)
 
-    async def _process_bulk_add(self, update: Update, lines: List[str]):
+    async def _process_bulk_add(self, update: Update, lines: list[str]):
         success_count = replaced_count = fail_count = 0
         failed_details = []
 
@@ -370,7 +370,7 @@ class TelegramHandlers:
                 fail_count += 1
                 failed_details.append(f"• {line} (формат)")
 
-        report = f"📊 <b>Результат:</b>\n"
+        report = "📊 <b>Результат:</b>\n"
         report += f"✅ Добавлено: <b>{success_count}</b>\n"
         if replaced_count:
             report += f"🔄 Обновлено: <b>{replaced_count}</b>\n"
@@ -823,7 +823,7 @@ class TelegramHandlers:
         )
 
     def _format_screener_simple(
-        self, assets: List, fetch_time: float, from_cache: bool
+        self, assets: list, fetch_time: float, from_cache: bool
     ) -> str:
         text = "🔍 <b>ТОП ПО ДВИЖЕНИЮ ЦЕНЫ</b> (24ч)\n"
         text += "<i>Отсортировано по абсолютному изменению</i>\n"
@@ -859,7 +859,7 @@ class TelegramHandlers:
 
     # ==================== ЭКСПОРТ В CSV ====================
 
-    def _generate_export_file(self, tickers: List[str]) -> Optional[str]:
+    def _generate_export_file(self, tickers: list[str]) -> str | None:
         """
         Генерирует CSV с 15m/1H/4H свечами и RSI.
         Возвращает путь к файлу или None.

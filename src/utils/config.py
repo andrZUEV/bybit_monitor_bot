@@ -6,12 +6,11 @@
 от текущей рабочей директории запуска.
 """
 
-import os
 import logging
+import os
 from pathlib import Path
-from dotenv import load_dotenv
 
-from typing import Dict
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +72,7 @@ class Config:
     # Сколько свечей запрашивать при экспорте по каждому ТФ.
     # Больше свечей = качественнее анализ, но больше CSV.
     # Bybit отдаёт максимум 1000 свечей за один запрос.
-    EXPORT_LIMITS: Dict[str, int] = {
+    EXPORT_LIMITS: dict[str, int] = {
         "15":  300,   # ~75ч     — покрывает 48ч lookback для count_touches
         "60":  300,   # ~12.5д   — EMA50/EMA200 + локальные уровни
         "240": 400,   # ~66д     — глобальный тренд + «бетонные» уровни

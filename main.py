@@ -3,21 +3,20 @@ Bybit Monitor Bot - Главная точка входа
 Объединяет мониторинг цен/объемов и Telegram-бота
 """
 
-import sys
-import os
 import logging
+import os
+import sys
 import time
 
 # Добавляем корень проекта в путь (для запуска python main.py)
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
-from src.utils.config import Config
-from src.core.alerts import AlertsManager
-from src.telegram.bot import TelegramBot
-from src.core.monitor import Monitor, AlertEvent
-from src.utils.data_exporter import DataExporter
 
-import threading
+from src.core.alerts import AlertsManager
+from src.core.monitor import AlertEvent, Monitor
+from src.telegram.bot import TelegramBot
+from src.utils.config import Config
+from src.utils.data_exporter import DataExporter
 
 # ==================== НАСТРОЙКА ЛОГИРОВАНИЯ ====================
 
