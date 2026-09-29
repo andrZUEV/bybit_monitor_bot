@@ -138,6 +138,43 @@ class BybitClient:
                 return None
         return None
 
+    def resolve_symbol(
+        self, user_input: str, category: str = "linear"
+    ) -> Optional[str]:
+        """
+        Приводит пользовательский ввод к валидному символу Bybit.
+
+        Примеры:
+            "sol"      -> "SOLUSDT"
+            "SOL"      -> "SOLUSDT"
+            "Sol"      -> "SOLUSDT"
+            "solusdt"  -> "SOLUSDT"
+            "SOLUSDT"  -> "SOLUSDT"
+            "BTC"      -> "BTCUSDT"
+            "btcusdt"  -> "BTCUSDT"
+            "random"   -> None
+
+        Возвращает None, если символ не найден на Bybit.
+        """
+        if not user_input:
+            return None
+
+        s = user_input.strip().upper().replace(" ", "")
+        if not s:
+            return None
+
+        # Кандидаты для проверки
+        if s.endswith("USDT"):
+            candidates = [s]
+        else:
+            candidates = [s + "USDT"]
+
+        for cand in candidates:
+            if self.get_ticker(cand, category) is not None:
+                return cand
+
+        return None
+
     def get_klines(
         self,
         symbol: str,

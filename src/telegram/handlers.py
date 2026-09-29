@@ -1,12 +1,11 @@
 """
 Обработчики команд и callback'ов Telegram бота.
 
-Версия 2.0:
-- Все callback'и обрабатываются (del, del_all, menu_prices, menu_list, menu_help, scr_add, dir_*)
-- Пошаговый диалог добавления алерта: тикер → цена → направление → заметка
-- Единый calculate_rsi из src/utils/indicators.py
-- Пути через Config.EXPORTS_DIR
-- Убран двойной query.answer()
+Версия 2.1:
+- Все методы внутри класса TelegramHandlers (исправлен развал структуры).
+- resolve_symbol для интерактивного ввода тикеров (диалог добавления,
+  /data, ручная выгрузка).
+- Быстрое однострочное и массовое добавление — просто +USDT без REST (не тормозим).
 """
 
 import os
@@ -15,7 +14,6 @@ import logging
 import csv
 from datetime import datetime
 from typing import Dict, Any, List, Optional
-from pathlib import Path
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
 from telegram.ext import ContextTypes
@@ -103,15 +101,12 @@ class TelegramHandlers:
             )
             return
 
-        symbol = context.args[0].strip().upper()
-        if not symbol.endswith("USDT"):
-            symbol += "USDT"
-
-        # Проверяем, что символ существует на Bybit
-        if self.bybit_client.get_ticker(symbol, "linear") is None:
+        user_input = context.args[0].strip()
+        symbol = self.bybit_client.resolve_symbol(user_input, "linear")
+        if not symbol:
             await update.message.reply_text(
-                f"❌ Символ <code>{symbol}</code> не найден на Bybit.\n"
-                f"Проверьте написание.",
+                f"❌ Символ <code>{user_input}</code> не найден на Bybit.\n"
+                f"Можно писать сокращённо: <code>eth</code>, <code>ETH</code>, <code>ETHUSDT</code>.",
                 parse_mode="HTML",
             )
             return
@@ -136,12 +131,12 @@ class TelegramHandlers:
 
         # --- Добавление алерта: ожидание тикера ---
         if step == "waiting_symbol":
-            symbol = text.strip().upper().replace(" ", "")
-            if not symbol.endswith("USDT"):
-                symbol += "USDT"
-            if len(symbol) < 6 or not symbol.isalpha():
+            user_input = text.strip()
+            symbol = self.bybit_client.resolve_symbol(user_input, "linear")
+            if not symbol:
                 await update.message.reply_text(
-                    "❌ Некорректный тикер.",
+                    f"❌ Тикер <code>{user_input}</code> не найден на Bybit.\n"
+                    f"Попробуйте: <code>BTC</code>, <code>BTCUSDT</code>, <code>sol</code>.",
                     parse_mode="HTML",
                     reply_markup=keyboards.cancel_keyboard(),
                 )
@@ -199,7 +194,9 @@ class TelegramHandlers:
         # --- Однострочный формат: SYMBOL PRICE DIR [NOTE] ---
         parts = text.split(maxsplit=3)
         if len(parts) >= 3:
-            symbol = parts[0].upper()
+            symbol = parts[0].strip().upper()
+            if not symbol.endswith("USDT"):
+                symbol += "USDT"
             try:
                 price = float(parts[1].replace(",", "."))
                 direction = parts[2].lower()
@@ -246,39 +243,27 @@ class TelegramHandlers:
 
     async def _handle_export_tickers(self, update: Update, text: str, chat_id: int):
         """Обработка ввода тикеров для экспорта."""
-        raw_tickers = text.upper().split()
-        valid_tickers = []
+        raw_tickers = text.replace(",", " ").split()
+        checked_tickers: List[str] = []
+        invalid_tickers: List[str] = []
+
         for t in raw_tickers:
-            t = t.strip().upper()
-            if not t.endswith("USDT"):
-                t += "USDT"
-            if len(t) >= 6:
-                valid_tickers.append(t)
-
-        if not valid_tickers:
-            await update.message.reply_text(
-                "❌ Неверный формат. Введите тикеры через пробел.\n"
-                "Можно писать как <code>BTC ETH</code>, так и <code>BTCUSDT ETHUSDT</code>.",
-                parse_mode="HTML",
-                reply_markup=keyboards.cancel_keyboard(),
-            )
-            return
-
-        # Предварительная проверка: отбрасываем символы, которых нет на Bybit
-        checked_tickers = []
-        invalid_tickers = []
-        for ticker in valid_tickers:
-            probe = self.bybit_client.get_ticker(ticker, "linear")
-            if probe is None:
-                invalid_tickers.append(ticker)
+            t = t.strip()
+            if not t:
+                continue
+            resolved = self.bybit_client.resolve_symbol(t, "linear")
+            if resolved:
+                if resolved not in checked_tickers:
+                    checked_tickers.append(resolved)
             else:
-                checked_tickers.append(ticker)
+                invalid_tickers.append(t.upper())
 
         if not checked_tickers:
-            invalid_msg = ", ".join(invalid_tickers)
+            invalid_msg = ", ".join(invalid_tickers) if invalid_tickers else "—"
             await update.message.reply_text(
                 f"❌ Не найдено ни одного валидного тикера на Bybit:\n"
                 f"<code>{invalid_msg}</code>\n\n"
+                f"Можно писать как <code>BTC ETH</code>, так и <code>BTCUSDT ETHUSDT</code>.\n"
                 f"Проверьте написание (например, <code>XRP</code>, а не <code>XPR</code>).",
                 parse_mode="HTML",
                 reply_markup=keyboards.main_menu_keyboard(),
@@ -350,7 +335,9 @@ class TelegramHandlers:
                 continue
             parts = line.split(maxsplit=3)
             if len(parts) >= 3:
-                symbol = parts[0].upper()
+                symbol = parts[0].strip().upper()
+                if not symbol.endswith("USDT"):
+                    symbol += "USDT"
                 try:
                     price = float(parts[1].replace(",", "."))
                     direction = parts[2].lower()
@@ -484,7 +471,7 @@ class TelegramHandlers:
             self.user_state[chat_id] = {"step": "waiting_for_export_tickers"}
             await query.edit_message_text(
                 "✏️ <b>Ручная выгрузка</b>\n\nВведите тикеры через пробел:\n"
-                "Например: <code>BTCUSDT ETHUSDT</code>",
+                "Например: <code>BTC ETH</code> или <code>BTCUSDT ETHUSDT</code>",
                 parse_mode="HTML",
                 reply_markup=keyboards.cancel_keyboard(),
             )
@@ -737,11 +724,11 @@ class TelegramHandlers:
             "ℹ️ <b>Справка</b>\n\n"
             "<b>Формат быстрого добавления:</b>\n"
             "<code>TICKER PRICE DIR [NOTE]</code>\n"
-            "Пример: <code>BTCUSDT 85000 up пробой</code>\n\n"
+            "Пример: <code>BTC 85000 up пробой</code> или <code>BTCUSDT 85000 up пробой</code>\n\n"
             "<b>DIR:</b> up | down | any\n\n"
             "<b>Массовое добавление:</b> отправьте несколько строк:\n"
-            "<code>BTCUSDT 85000 up пробой\n"
-            "ETHUSDT 3200 down ретест</code>"
+            "<code>BTC 85000 up пробой\n"
+            "ETH 3200 down ретест</code>"
         )
         try:
             if update.callback_query:

@@ -1,7 +1,20 @@
 """
 Модуль мониторинга цен и объёмов.
 
-Версия 2.0:
+Версия 3.0 (WebSocket):
+- Основной режим — WS-push (BybitWebSocketClient). Подписки обновляются
+  раз в Config.WS_SYMBOL_REFRESH секунд по alerts.json.
+- Fallback — REST-поллинг (старый _poll_once). Включается, если
+  Config.USE_WEBSOCKET=False или WS-клиент не передан.
+- Klines по-прежнему через REST, только при срабатывании алерта.
+- Прогрев prev_price: первый тик по символу только запоминает цену,
+  кросс не проверяется (то же поведение, что и в REST-версии).
+- Кэш _assets_by_symbol для быстрого поиска Asset по тикеру из WS.
+- states[symbol] НЕ удаляются при исчезновении символа из alerts.json:
+  это защищает от гонки с WS-потоком и сохраняет prev_price между
+  удалением/повторным добавлением того же уровня.
+
+Версия 2.0 (REST):
 - Лимиты klines увеличены до 250 (для корректного count_touches за 48ч)
 - Интервалы/периоды берутся из Config, если не переданы явно
 - Прогрев состояния при старте: первый тик только запоминает prev_price
@@ -12,14 +25,15 @@ import sys
 import os
 import time
 import logging
-from typing import Callable, Optional, Dict, Any
+import threading
+from typing import Callable, Optional, Dict, Any, Iterable
 from dataclasses import dataclass, field
 from enum import Enum
 
 # Добавляем корень проекта в путь (для запуска python main.py)
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
-from src.api.bybit_client import BybitClient
+from src.api.bybit_client import BybitClient, TickerData
 from src.core.alerts import AlertsManager, Asset, AlertRule
 from src.core.cooldown import CooldownManager
 from src.utils.config import Config
@@ -31,8 +45,8 @@ logger = logging.getLogger(__name__)
 # ==================== КОНСТАНТЫ ====================
 
 # Лимиты свечей для анализа.
-# 15m: 250 свечей = ~62ч (хватает для count_touches за 48ч)
-# 4H:  100 свечей = ~16 дней (для EMA50 + наклон)
+# 15m: 300 свечей = ~75ч (хватает для count_touches за 48ч)
+# 4H:  400 свечей = ~66 дней (для EMA50 + наклон)
 KLINES_15M_LIMIT = Config.EXPORT_LIMITS["15"]   # 300
 KLINES_4H_LIMIT = Config.EXPORT_LIMITS["240"]   # 400
 VOLUME_PERIODS = 20
@@ -72,14 +86,20 @@ class Monitor:
         alerts_manager: AlertsManager,
         on_alert_callback: Callable[[AlertEvent], None],
         bybit_client: Optional[BybitClient] = None,
+        # REST-fallback:
         poll_interval: float = 4.0,
+        # legacy, не используется:
         volume_threshold: float = 5.0,
         volume_cooldown: float = 300.0,
+        # общие:
         price_reset_threshold: float = 0.005,
         candle_interval: str = "15",
         candle_periods: int = 20,
         candle_volume_multiplier: float = 3.0,
         alert_cooldown_minutes: int = 25,
+        # WS:
+        ws_client: Optional[Any] = None,   # BybitWebSocketClient (ленивый импорт)
+        use_websocket: bool = True,
     ):
         self.alerts_manager = alerts_manager
         self.on_alert = on_alert_callback
@@ -91,7 +111,9 @@ class Monitor:
         self.candle_periods = candle_periods
         self.candle_volume_multiplier = candle_volume_multiplier
 
-        # Используем переданный клиент или создаём новый (для тестов)
+        # REST-клиент нужен для:
+        #   - fallback-поллинга,
+        #   - получения klines/volume при срабатывании алерта.
         self.client = bybit_client or BybitClient()
 
         # Путь к cooldowns.json — из Config
@@ -101,13 +123,36 @@ class Monitor:
         )
 
         self.states: Dict[str, AssetState] = {}
+        # Кэш: symbol -> Asset. Обновляется в _refresh_subscriptions().
+        self._assets_by_symbol: Dict[str, Asset] = {}
+        self._cache_lock = threading.Lock()
+
+        # Управление жизненным циклом
         self._running = False
+        self._stop_event = threading.Event()
+        self._refresh_thread: Optional[threading.Thread] = None
+
+        # REST-polling счётчик (для fallback)
         self._poll_count = 0
+
+        # WebSocket
+        self.use_websocket = use_websocket
+        self._ws_client = ws_client  # может быть None — создадим ниже
+        if self.use_websocket and self._ws_client is None:
+            # Ленивый импорт, чтобы не тянуть websocket-client, если WS выключен
+            from src.api.bybit_ws import BybitWebSocketClient
+
+            self._ws_client = BybitWebSocketClient(
+                url=Config.WS_URL,
+                on_ticker=self._on_ticker_update,
+                ping_interval=Config.WS_PING_INTERVAL,
+                reconnect_delay=Config.WS_RECONNECT_DELAY,
+            )
 
     # ==================== ПРОВЕРКА ЦЕН ====================
 
     def _check_price_cross(
-        self, asset: Asset, ticker: Any, state: AssetState
+        self, asset: Asset, ticker: TickerData, state: AssetState
     ) -> None:
         """Проверяет пересечения цены с уровнями алертов."""
         if state.prev_price is None:
@@ -148,12 +193,6 @@ class Monitor:
                     )
                     state.triggered_alerts[alert_key] = True
                     continue
-
-                cross_text = (
-                    "🟢 СНИЗУ ВВЕРХ"
-                    if cross_type == CrossDirection.UP
-                    else "🔴 СВЕРХУ ВНИЗ"
-                )
 
                 # 2. Получаем свечи и объём ТОЛЬКО если не в кулдауне
                 klines_15m = self.client.get_klines(
@@ -236,10 +275,97 @@ class Monitor:
                 # Ставим флаг, чтобы не дёргать API повторно, пока цена не отойдёт
                 state.triggered_alerts[alert_key] = True
 
-    # ==================== ЦИКЛ ОПРОСА ====================
+    # ==================== WS-КОЛБЭК ====================
+
+    def _on_ticker_update(self, symbol: str, price: float, volume_24h: float) -> None:
+        """
+        Колбэк из WS-потока: пришёл новый тикер по символу.
+
+        Находит Asset (по кэшу или из alerts_manager — fallback на гонку),
+        проверяет кроссы, обновляет prev_price.
+        """
+        # Ищем Asset
+        with self._cache_lock:
+            asset = self._assets_by_symbol.get(symbol)
+
+        if asset is None:
+            # Fallback: возможно, алерт только что добавили, а refresh ещё не прошёл.
+            # Или символ есть в alerts.json, но WS подписался раньше, чем обновился кэш.
+            for a in self.alerts_manager.get_all_alerts():
+                if a.symbol == symbol:
+                    asset = a
+                    with self._cache_lock:
+                        self._assets_by_symbol[symbol] = a
+                    break
+
+        if asset is None:
+            # Нет алертов для этого символа — игнорируем.
+            # Возможно, символ ещё в _subscribed (удаляют алерт), это нормально.
+            return
+
+        state = self.states.get(symbol)
+        if state is None:
+            state = AssetState()
+            self.states[symbol] = state
+
+        ticker = TickerData(price=price, volume_24h=volume_24h)
+        try:
+            self._check_price_cross(asset, ticker, state)
+        except Exception as e:
+            logger.error(
+                f"Ошибка в _check_price_cross({symbol}): {e}", exc_info=True
+            )
+
+        state.prev_price = price
+        state.prev_volume = volume_24h
+
+    # ==================== ОБНОВЛЕНИЕ ПОДПИСОК ====================
+
+    def _refresh_subscriptions(self) -> None:
+        """
+        Перечитывает alerts.json, обновляет:
+          - набор подписок WS,
+          - кэш _assets_by_symbol.
+
+        states не трогаем — см. комментарий в шапке модуля.
+        """
+        self.alerts_manager.load()
+        assets = self.alerts_manager.get_all_alerts()
+
+        new_cache: Dict[str, Asset] = {a.symbol: a for a in assets}
+        symbols = set(new_cache.keys())
+
+        with self._cache_lock:
+            self._assets_by_symbol = new_cache
+
+        if self._ws_client is not None:
+            self._ws_client.set_symbols(symbols)
+
+        logger.debug(
+            f"🔄 Подписки обновлены: {len(symbols)} символов"
+        )
+
+    def _refresh_loop(self) -> None:
+        """Фоновый поток: периодический refresh подписок."""
+        # Первый refresh — сразу, до старта WS.
+        try:
+            self._refresh_subscriptions()
+        except Exception as e:
+            logger.error(f"Ошибка в _refresh_subscriptions: {e}", exc_info=True)
+
+        while not self._stop_event.is_set():
+            # Ждём либо таймаут, либо stop
+            if self._stop_event.wait(Config.WS_SYMBOL_REFRESH):
+                break
+            try:
+                self._refresh_subscriptions()
+            except Exception as e:
+                logger.error(f"Ошибка в _refresh_subscriptions: {e}", exc_info=True)
+
+    # ==================== REST-FALLBACK ЦИКЛ ====================
 
     def _poll_once(self) -> None:
-        """Один цикл опроса всех активов."""
+        """Один цикл опроса всех активов (REST-fallback)."""
         self.alerts_manager.load()
         assets = self.alerts_manager.get_all_alerts()
 
@@ -259,35 +385,100 @@ class Monitor:
             if not ticker:
                 continue
 
-            self._check_price_cross(asset, ticker, self.states[symbol])
-
             state = self.states[symbol]
+            self._check_price_cross(asset, ticker, state)
             state.prev_price = ticker.price
             state.prev_volume = ticker.volume_24h
 
     # ==================== УПРАВЛЕНИЕ ====================
 
     def start(self) -> None:
-        """Блокирующий цикл мониторинга."""
+        """
+        Запускает мониторинг.
+
+        В WS-режиме:
+          - стартует фоновый поток refresh-подписок,
+          - стартует WS-клиент,
+          - блокирует главный поток до stop()/KeyboardInterrupt.
+
+        В REST-режиме:
+          - блокирующий цикл _poll_once() с паузой poll_interval.
+        """
         self._running = True
+        self._stop_event.clear()
+
+        if self.use_websocket and self._ws_client is not None:
+            self._start_websocket()
+        else:
+            self._start_rest_polling()
+
+    def _start_websocket(self) -> None:
         logger.info(
-            f"🚀 Мониторинг запущен. "
+            f"🚀 Мониторинг (WebSocket) запущен. "
+            f"Кулдаун: {self.cooldown_manager.cooldown_seconds // 60}м, "
+            f"Refresh подписок: {Config.WS_SYMBOL_REFRESH:.0f}с"
+        )
+
+        # Поток обновления подписок
+        self._refresh_thread = threading.Thread(
+            target=self._refresh_loop, name="MonitorRefresh", daemon=True
+        )
+        self._refresh_thread.start()
+
+        # WS-клиент
+        try:
+            self._ws_client.start()
+        except Exception as e:
+            logger.error(f"Не удалось запустить WS-клиент: {e}", exc_info=True)
+            logger.warning("⚠️ Переключаюсь на REST-fallback.")
+            self.use_websocket = False
+            self._start_rest_polling()
+            return
+
+        # Блокируем главный поток до остановки
+        try:
+            while self._running and not self._stop_event.is_set():
+                self._stop_event.wait(1.0)
+        except KeyboardInterrupt:
+            logger.info("🛑 Мониторинг остановлен (KeyboardInterrupt)")
+        finally:
+            self._running = False
+
+    def _start_rest_polling(self) -> None:
+        logger.info(
+            f"🚀 Мониторинг (REST) запущен. "
             f"Интервал: {self.poll_interval}s, "
             f"Кулдаун: {self.cooldown_manager.cooldown_seconds // 60}м"
         )
         try:
-            while self._running:
+            while self._running and not self._stop_event.is_set():
                 try:
                     self._poll_once()
                 except Exception as e:
                     logger.error(f"Ошибка в цикле: {e}", exc_info=True)
-                time.sleep(self.poll_interval)
+                # Прерываемый sleep
+                if self._stop_event.wait(self.poll_interval):
+                    break
         except KeyboardInterrupt:
-            logger.info("🛑 Мониторинг остановлен")
+            logger.info("🛑 Мониторинг остановлен (KeyboardInterrupt)")
         finally:
             self._running = False
 
     def stop(self) -> None:
-        """Останавливает цикл мониторинга."""
-        self._running = False
+        """Останавливает мониторинг и все фоновые потоки."""
         logger.info("Мониторинг останавливается...")
+        self._running = False
+        self._stop_event.set()
+
+        # Останавливаем WS-клиент
+        if self._ws_client is not None:
+            try:
+                self._ws_client.stop()
+            except Exception as e:
+                logger.error(f"Ошибка остановки WS: {e}", exc_info=True)
+
+        # Ждём refresh-поток
+        if self._refresh_thread is not None and self._refresh_thread.is_alive():
+            self._refresh_thread.join(timeout=5.0)
+
+        logger.info("🛑 Мониторинг остановлен.")

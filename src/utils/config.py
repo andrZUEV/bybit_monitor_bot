@@ -36,6 +36,22 @@ class Config:
     VOLUME_THRESHOLD: float = float(os.getenv("VOLUME_THRESHOLD", "5.0"))
     VOLUME_COOLDOWN: float = float(os.getenv("VOLUME_COOLDOWN", "300"))
 
+    # ==================== WebSocket ====================
+    # Использовать WS для получения цен. False = fallback на REST-поллинг.
+    USE_WEBSOCKET: bool = os.getenv("USE_WEBSOCKET", "true").strip().lower() in (
+        "1", "true", "yes", "on"
+    )
+    # URL публичного WS Bybit v5 (linear)
+    WS_URL: str = os.getenv(
+        "BYBIT_WS_URL", "wss://stream.bybit.com/v5/public/linear"
+    )
+    # Базовая задержка реконнекта (сек), далее — экспоненциальный backoff
+    WS_RECONNECT_DELAY: float = float(os.getenv("WS_RECONNECT_DELAY", "5"))
+    # Период ping'а (Bybit требует не реже 20 сек)
+    WS_PING_INTERVAL: float = float(os.getenv("WS_PING_INTERVAL", "20"))
+    # Период сверки списка подписок с alerts.json
+    WS_SYMBOL_REFRESH: float = float(os.getenv("WS_SYMBOL_REFRESH", "10"))
+
     # ==================== Анализ свечей ====================
     # Таймфрейм для анализа паттернов/RSI (в минутах, формат Bybit: "15", "60", "240")
     CANDLE_INTERVAL: str = os.getenv("CANDLE_INTERVAL", "15")

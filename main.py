@@ -117,7 +117,8 @@ def main():
         candle_interval=Config.CANDLE_INTERVAL,
         candle_periods=Config.CANDLE_PERIODS,
         candle_volume_multiplier=Config.CANDLE_VOLUME_MULTIPLIER,
-        alert_cooldown_minutes=Config.ALERT_COOLDOWN_MINUTES
+        alert_cooldown_minutes=Config.ALERT_COOLDOWN_MINUTES,
+        use_websocket=Config.USE_WEBSOCKET,   # <-- добавить
     )
     logger.info("✅ Монитор инициализирован")
 
