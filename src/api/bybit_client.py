@@ -6,6 +6,8 @@
 """
 
 import logging
+import random
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -44,7 +46,7 @@ class BybitClient:
     BASE_URL = "https://api.bybit.com"
 
     # Коды Bybit, при которых имеет смысл повторить запрос
-    RETRYABLE_CODES = {-1001, -1000, 10002, 10003, 429}
+    RETRYABLE_CODES = {-1001, -1000, 10002, 10003,10006, 429}
 
     def __init__(self, max_retries: int = 3, base_delay: float = 1.0):
         self.max_retries = max_retries
@@ -55,6 +57,14 @@ class BybitClient:
             "User-Agent": "BybitMonitorBot/1.0",
         })
 
+        # Rate limiter: не чаще, чем _min_request_interval секунд
+        # между запросами. Работает для всех, кто ходит через
+        # self.session — Monitor, handlers, data_exporter.
+        self._rate_lock = threading.Lock()
+        self._last_request_ts = 0.0
+        # ~8 req/sec с запасом от 10 (лимит Bybit public).
+        self._min_request_interval = 0.12
+
     # ==================== ВНУТРЕННИЕ ====================
 
     def _make_request(
@@ -64,12 +74,21 @@ class BybitClient:
         params: dict[str, Any] | None = None,
         json_data: dict[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        """
-        HTTP-запрос с ретраями (экспоненциальная задержка).
+        
+        """ HTTP-запрос с ретраями (экспоненциальная задержка).
+
+        - Retry на сетевые ошибки / не-JSON.
+        - Retry на RETRYABLE_CODES. Для 10006 (rate limit) —
+          отдельный, более длинный backoff.
+        - Rate limiter перед запросом.
 
         Возвращает result-часть ответа или None.
         """
+       
         url = f"{self.BASE_URL}{endpoint}"
+
+        # Rate limiter.
+        self._rate_limit()
 
         for attempt in range(self.max_retries):
             try:
@@ -86,7 +105,7 @@ class BybitClient:
                         f"Bybit вернул не-JSON (HTTP {response.status_code}): "
                         f"{response.text[:200]}"
                     )
-                    time.sleep(self.base_delay * (2 ** attempt))
+                    time.sleep(self._retry_delay(attempt))
                     continue
 
                 ret_code = data.get("retCode")
@@ -94,7 +113,10 @@ class BybitClient:
                     ret_msg = data.get("retMsg", "Unknown error")
 
                     if ret_code in self.RETRYABLE_CODES:
-                        delay = self.base_delay * (2 ** attempt)
+                        if ret_code == 10006:
+                            delay = self._rate_limit_backoff(attempt)
+                        else:
+                            delay = self._retry_delay(attempt)
                         logger.warning(
                             f"Bybit API (код {ret_code}): {ret_msg}. "
                             f"Повтор через {delay:.1f}с..."
@@ -108,15 +130,45 @@ class BybitClient:
                 return data.get("result")
 
             except requests.exceptions.RequestException as e:
-                delay = self.base_delay * (2 ** attempt)
+                delay = self._retry_delay(attempt)
                 logger.warning(f"Сетевая ошибка: {e}. Повтор через {delay:.1f}с...")
                 time.sleep(delay)
             except Exception as e:
-                logger.error(f"Неожиданная ошибка в _make_request: {e}", exc_info=True)
+                logger.error(
+                    f"Неожиданная ошибка в _make_request: {e}", exc_info=True
+                )
                 return None
 
         logger.error("Превышено максимальное количество попыток запроса к Bybit API.")
         return None
+
+    def _rate_limit(self) -> None:
+        """Простой token-bucket: не чаще, чем _min_request_interval.
+
+        Потокобезопасно. Гарантирует, что даже при всплеске
+        запросов из разных потоков не упираемся в rate limit Bybit.
+        """
+        with self._rate_lock:
+            now = time.monotonic()
+            delta = now - self._last_request_ts
+            if delta < self._min_request_interval:
+                time.sleep(self._min_request_interval - delta)
+            self._last_request_ts = time.monotonic()
+
+    def _retry_delay(self, attempt: int) -> float:
+        """Экспоненциальный backoff с джиттером: base_delay * 2^n + [0..0.5]."""
+        base = self.base_delay * (2 ** attempt)
+        return base + random.uniform(0, 0.5)
+
+    def _rate_limit_backoff(self, attempt: int) -> float:
+        """Backoff специально для 10006 — ждём дольше, чем обычно.
+
+        Bybit рекомендует паузу не меньше 1 секунды; на практике
+        окно сбрасывается за 2–5 секунд. Формула: 3 * (attempt+1)
+        с джиттером до 1 сек, максимум 10 сек.
+        """
+        base = min(3.0 * (attempt + 1), 10.0)
+        return base + random.uniform(0, 1.0)
 
     # ==================== ПУБЛИЧНЫЕ МЕТОДЫ ====================
 
@@ -142,8 +194,8 @@ class BybitClient:
     def resolve_symbol(
         self, user_input: str, category: str = "linear"
     ) -> str | None:
-        """
-        Приводит пользовательский ввод к валидному символу Bybit.
+        
+        """Приводит пользовательский ввод к валидному символу Bybit.
 
         Примеры:
             "sol"      -> "SOLUSDT"
@@ -155,8 +207,8 @@ class BybitClient:
             "btcusdt"  -> "BTCUSDT"
             "random"   -> None
 
-        Возвращает None, если символ не найден на Bybit.
-        """
+        Возвращает None, если символ не найден на Bybit."""
+        
         if not user_input:
             return None
 
