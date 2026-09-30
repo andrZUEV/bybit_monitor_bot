@@ -76,7 +76,34 @@ class Config:
         "15":  300,   # ~75ч     — покрывает 48ч lookback для count_touches
         "60":  300,   # ~12.5д   — EMA50/EMA200 + локальные уровни
         "240": 400,   # ~66д     — глобальный тренд + «бетонные» уровни
+        "D":   200,   # ~200 дней — для зеркальных уровней и HH/HL
     }
+
+    # ==================== Риск-менеджмент (Этап 4) ====================
+    # Депозит в USDT. Обязателен для расчёта размера позиции.
+    # Если 0 — risk-модуль вернёт size=0 (см. validate_setup).
+    EQUITY: float = float(os.getenv("EQUITY", "0"))
+
+    # Риск на сделку (доля). Жёсткий предел стратегии — 0.01 (1%).
+    # Если в .env больше — validate_setup вернёт risk_above_max.
+    RISK_PCT: float = float(os.getenv("RISK_PCT", "0.01"))
+
+    # Шаг лота для округления размера позиции (0 = не округлять).
+    # Для BTCUSDT на Bybit linear обычно 0.001.
+    LOT_STEP: float = float(os.getenv("LOT_STEP", "0"))
+
+    # Минимальный размер позиции. Если расчётный < MIN_QTY → алерт
+    # помечается size_below_min.
+    MIN_QTY: float = float(os.getenv("MIN_QTY", "0"))
+
+    # Максимальный размер позиции (защита от ошибок в EQUITY).
+    MAX_QTY: float = float(os.getenv("MAX_QTY", "0")) or float("inf")
+
+    # Множитель ATR для стопа (стратегия: 1.5).
+    ATR_MULTIPLIER: float = float(os.getenv("ATR_MULTIPLIER", "1.5"))
+
+    # Минимальный «запас хода» до TP1 в ATR (стратегия: 2.0).
+    MIN_RUNWAY_ATR: float = float(os.getenv("MIN_RUNWAY_ATR", "2.0"))
 
     # ==================== Пути ====================
     DATA_DIR: Path = PROJECT_ROOT / "data"
@@ -101,3 +128,7 @@ class Config:
 Config.DATA_DIR.mkdir(parents=True, exist_ok=True)
 Config.EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
 Config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
+
+# ==================== Риск-менеджмент ====================
+
+    
