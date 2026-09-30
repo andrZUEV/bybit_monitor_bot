@@ -35,7 +35,7 @@ class CooldownManager:
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.cooldowns: dict[str, float] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.load()
     
     def _make_key(self, symbol: str, price: float, direction: str) -> str:
