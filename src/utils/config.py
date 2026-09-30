@@ -97,7 +97,8 @@ class Config:
     MIN_QTY: float = float(os.getenv("MIN_QTY", "0"))
 
     # Максимальный размер позиции (защита от ошибок в EQUITY).
-    MAX_QTY: float = float(os.getenv("MAX_QTY", "0")) or float("inf")
+    _max_qty_raw: str = os.getenv("MAX_QTY", "").strip()
+    MAX_QTY: float = float(_max_qty_raw) if _max_qty_raw else float("inf")
 
     # Множитель ATR для стопа (стратегия: 1.5).
     ATR_MULTIPLIER: float = float(os.getenv("ATR_MULTIPLIER", "1.5"))
