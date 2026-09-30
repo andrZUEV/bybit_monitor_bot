@@ -25,6 +25,7 @@ import logging
 import os
 import sys
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -36,6 +37,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from src.api.bybit_client import BybitClient, TickerData
 from src.core.alerts import AlertsManager, Asset
 from src.core.cooldown import CooldownManager
+from src.core.risk import RiskConfig, risk_config_from_env
 from src.utils.config import Config
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -46,10 +48,18 @@ logger = logging.getLogger(__name__)
 
 # Лимиты свечей для анализа.
 # 15m: 300 свечей = ~75ч (хватает для count_touches за 48ч)
-# 4H:  400 свечей = ~66 дней (для EMA50 + наклон)
+# 1H:  300 свечей = ~12.5д (для ATR-1h, runway)
+# 4H:  400 свечей = ~66 дней (для EMA50 + наклон + уровни)
+# 1D:  200 свечей = ~200 дней (для зеркальных уровней, HH/HL)
 KLINES_15M_LIMIT = Config.EXPORT_LIMITS["15"]   # 300
+KLINES_1H_LIMIT = Config.EXPORT_LIMITS["60"]    # 300
 KLINES_4H_LIMIT = Config.EXPORT_LIMITS["240"]   # 400
+KLINES_1D_LIMIT = Config.EXPORT_LIMITS["D"]     # 200
 VOLUME_PERIODS = 20
+
+# TTL кэша klines (в секундах). 1H меняется раз в час, 1D — раз в сутки.
+KLINES_1H_TTL = 3600
+KLINES_1D_TTL = 86400
 
 
 # ==================== DTO ====================
@@ -123,6 +133,33 @@ class Monitor:
         )
 
         self.states: dict[str, AssetState] = {}
+        # Кэш klines для 1H/1D (не дёргаем Bybit на каждый алерт)
+        # symbol -> (timestamp, klines)
+        self._klines_1h_cache: dict[str, tuple[float, list[list]]] = {}
+        self._klines_1d_cache: dict[str, tuple[float, list[list]]] = {}
+        self._klines_cache_lock = threading.Lock()
+
+        # Risk-конфиг (Этап 4). Строится один раз. Если EQUITY=0 — None,
+        # тогда evaluate_alert не считает план сделки.
+        self.risk_cfg: RiskConfig | None = None
+        if Config.EQUITY > 0:
+            self.risk_cfg = risk_config_from_env(
+                equity=Config.EQUITY,
+                risk_pct=Config.RISK_PCT,
+                lot_step=Config.LOT_STEP,
+                min_qty=Config.MIN_QTY,
+                max_qty=Config.MAX_QTY,
+                atr_multiplier=Config.ATR_MULTIPLIER,
+            )
+            logger.info(
+                f"💰 Risk-модуль включён: equity={Config.EQUITY}, "
+                f"risk_pct={Config.RISK_PCT * 100:.2f}%"
+            )
+        else:
+            logger.warning(
+                "⚠️ EQUITY=0 в .env → risk-модуль выключен, "
+                "алерты без плана сделки"
+            )
         # Кэш: symbol -> Asset. Обновляется в _refresh_subscriptions().
         self._assets_by_symbol: dict[str, Asset] = {}
         self._cache_lock = threading.Lock()
@@ -199,6 +236,14 @@ class Monitor:
                 klines_4h = self.client.get_klines(
                     asset.symbol, asset.category, "240", KLINES_4H_LIMIT
                 )
+                klines_1h = self._get_klines_cached(
+                    asset.symbol, asset.category, "60",
+                    KLINES_1H_LIMIT, KLINES_1H_TTL,
+                )
+                klines_1d = self._get_klines_cached(
+                    asset.symbol, asset.category, "D",
+                    KLINES_1D_LIMIT, KLINES_1D_TTL,
+                )
                 vol_data = self.client.get_candle_volume_ratio(
                     asset.symbol, asset.category, "15", VOLUME_PERIODS
                 )
@@ -215,9 +260,13 @@ class Monitor:
                         alert_created_at=rule.created_at,
                         klines_15m=klines_15m,
                         klines_4h=klines_4h,
+                        klines_1h=klines_1h,
+                        klines_1d=klines_1d,
+                        risk_cfg=self.risk_cfg,
                     )
 
-                    if evaluation["verdict"] != "❌ None":
+                    hard_filter = evaluation.get("hard_filter")
+                    if evaluation["verdict"] != "❌ None" or hard_filter:
                         message = format_alert_message(
                             symbol=asset.symbol,
                             level=target,
@@ -260,18 +309,58 @@ class Monitor:
                         self.cooldown_manager.mark_sent(asset.symbol, target, direction)
                         logger.info(
                             f"🔔 Алерт ОТПРАВЛЕН: {asset.symbol} @ {target} "
-                            f"(Score: {evaluation['score']})"
+                            f"(Score: {evaluation['score']}"
+                            + (f", hard_filter={hard_filter}" if hard_filter else "")
+                            + ")"
                         )
+                        
                     else:
                         logger.info(
                             f"⏭️ Алерт ПРОПУЩЕН (слабый сигнал): "
-                            f"{asset.symbol} @ {target} (Score: {evaluation['score']})"
+                            f"{asset.symbol} @ {target} "
+                            f"(Score: {evaluation['score']}, verdict: {evaluation['verdict']})"
                         )
                 else:
                     logger.warning(f"⚠️ Не удалось получить данные для анализа: {asset.symbol}")
 
                 # Ставим флаг, чтобы не дёргать API повторно, пока цена не отойдёт
                 state.triggered_alerts[alert_key] = True
+
+    # ==================== КЭШ KLINES 1H/1D ====================
+
+    def _get_klines_cached(
+        self,
+        symbol: str,
+        category: str,
+        interval: str,
+        limit: int,
+        ttl: float,
+    ) -> list[list] | None:
+        """
+        Возвращает klines из кэша или запрашивает через REST.
+
+        TTL: 1H — 3600с, 1D — 86400с. Если данных в кэше нет или они
+        устарели — идём в REST. Ошибки REST не кэшируются.
+        """
+        if interval == "60":
+            cache = self._klines_1h_cache
+        elif interval == "D":
+            cache = self._klines_1d_cache
+        else:
+            # Для нестандартных интервалов кэш не ведём — прямой запрос
+            return self.client.get_klines(symbol, category, interval, limit)
+
+        now = time.time()
+        with self._klines_cache_lock:
+            entry = cache.get(symbol)
+            if entry is not None and (now - entry[0]) < ttl:
+                return entry[1]
+
+        data = self.client.get_klines(symbol, category, interval, limit)
+        if data:
+            with self._klines_cache_lock:
+                cache[symbol] = (now, data)
+        return data
 
     # ==================== WS-КОЛБЭК ====================
 
