@@ -634,7 +634,7 @@ class TelegramHandlers:
                 with open(filepath, "rb") as f:
                     await query.message.reply_document(
                         document=InputFile(f, filename=os.path.basename(filepath)),
-                        caption=f"✅ Данные по <b>{symbol}</b>\n15m / 1H / 4H + RSI",
+                        caption=f"✅ Данные по <b>{symbol}</b>\n15m / 1H / 4H / 1D + RSI",
                     )
                 if status_msg is not None:
                     try:
@@ -877,7 +877,7 @@ class TelegramHandlers:
 
     def _generate_export_file(self, tickers: list[str]) -> str | None:
         """
-        Генерирует CSV с 15m/1H/4H свечами и RSI.
+        Генерирует CSV с 15m/1H/4H/1D свечами и RSI.
         Возвращает путь к файлу или None.
         """
         try:
@@ -892,7 +892,12 @@ class TelegramHandlers:
                 )
 
                 for ticker in tickers:
-                    for tf, tf_name in [("15", "15m"), ("60", "1H"), ("240", "4H")]:
+                    for tf, tf_name in [
+                        ("15", "15m"),
+                        ("60", "1H"),
+                        ("240", "4H"),
+                        ("D", "1D"),
+                    ]:
                         try:
                             limit = Config.EXPORT_LIMITS.get(tf, 150)
                             klines = self.bybit_client.get_klines(ticker, "linear", tf, limit)
