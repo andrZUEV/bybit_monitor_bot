@@ -8,6 +8,7 @@
 - Быстрое однострочное и массовое добавление — просто +USDT без REST (не тормозим).
 """
 
+import asyncio
 import csv
 import logging
 import os
@@ -275,7 +276,9 @@ class TelegramHandlers:
         await update.message.reply_text(
             f"⏳ Генерирую файл для {len(checked_tickers)} тикеров..."
         )
-        filepath = self._generate_export_file(checked_tickers)
+        filepath = await asyncio.to_thread(
+            self._generate_export_file, checked_tickers
+        )
 
         if filepath and os.path.exists(filepath):
             caption = f"✅ Данные выгружены для: {', '.join(checked_tickers)}"
@@ -453,7 +456,9 @@ class TelegramHandlers:
                 return
             symbols = list({a.symbol for a in assets})
             await query.edit_message_text(f"⏳ Выгружаю данные для {len(symbols)} активов...")
-            filepath = self._generate_export_file(symbols)
+            filepath = await asyncio.to_thread(
+                self._generate_export_file, symbols
+            )
             if filepath and os.path.exists(filepath):
                 with open(filepath, "rb") as f:
                     await update.callback_query.message.reply_document(
@@ -489,7 +494,9 @@ class TelegramHandlers:
             await query.edit_message_text(
                 f"⏳ Выгружаю данные для {len(symbols)} активов из скринера..."
             )
-            filepath = self._generate_export_file(symbols)
+            filepath = await asyncio.to_thread(
+                self._generate_export_file, symbols
+            )
             if filepath and os.path.exists(filepath):
                 with open(filepath, "rb") as f:
                     await update.callback_query.message.reply_document(
@@ -617,7 +624,10 @@ class TelegramHandlers:
             logger.error(f"Не удалось отправить статусное сообщение: {e}")
             status_msg = None
 
-        filepath = self._generate_export_file([symbol])
+        # Синхронный вызов в отдельном потоке — не блокируем event loop.
+        filepath = await asyncio.to_thread(
+            self._generate_export_file, [symbol]
+        )
 
         if filepath and os.path.exists(filepath):
             try:
