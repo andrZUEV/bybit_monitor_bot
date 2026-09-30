@@ -680,26 +680,94 @@ def format_alert_message(
     evaluation: dict[str, Any],
     setup_note: str = "",
 ) -> str:
-    """Форматирует сообщение алерта в HTML для Telegram."""
+    """
+    Форматирует сообщение алерта в HTML для Telegram.
+
+    Версия 4.5:
+      - плашка ⛔ Hard filter в начале, если evaluation["hard_filter_ru"];
+      - секция 📐 План сделки: Entry / SL / TP1 / TP2 / RR / size;
+      - структура тренда 4H: up (HH+HL);
+      - топ-3 уровня 4H.
+
+    Обратная совместимость: если новых ключей нет — формат прежний.
+    """
     cross_text = "🟢 СНИЗУ ВВЕРХ" if direction == "up" else "🔴 СВЕРХУ ВНИЗ"
+    lines: list[str] = []
 
-    lines = [
-        f"🚨 <b>Price Alert: {symbol}</b>",
-        f"Уровень: <code>{level:,.2f}</code> | {cross_text}",
-        f"💰 Цена: <code>{current_price:,.2f}</code>",
-        "",
-        "📊 <b>Подтверждения:</b>",
-    ]
+    # 0. Hard filter — плашка сверху
+    hard_filter_ru = evaluation.get("hard_filter_ru")
+    if hard_filter_ru:
+        lines.append(f"⛔ <b>СДЕЛКА НЕ ПО СТРАТЕГИИ:</b> {hard_filter_ru}")
+        lines.append("")
 
+    # 1. Шапка
+    lines.append(f"🚨 <b>Price Alert: {symbol}</b>")
+    lines.append(f"Уровень: <code>{level:,.2f}</code> | {cross_text}")
+    lines.append(f"💰 Цена: <code>{current_price:,.2f}</code>")
+
+    # 2. План сделки
+    risk = evaluation.get("risk")
+    if risk is not None:
+        lines.append("")
+        lines.append("📐 <b>План сделки:</b>")
+        lines.append(f"  Entry: <code>{risk.entry:,.2f}</code>")
+        lines.append(f"  SL:    <code>{risk.stop:,.2f}</code>")
+        lines.append(
+            f"  TP1:   <code>{risk.tp1:,.2f}</code>  (RR {risk.rr_tp1:.2f})"
+        )
+        lines.append(
+            f"  TP2:   <code>{risk.tp2:,.2f}</code>  (RR {risk.rr:.2f})"
+        )
+        lines.append(
+            f"  Size:  <code>{risk.size:.4f}</code>  "
+            f"(риск ${risk.risk_amount:,.2f})"
+        )
+        lines.append(
+            f"  Runway: {risk.runway_atr:.1f}×ATR  |  "
+            f"valid: {'✅' if risk.valid else '⛔'}"
+        )
+
+    # 3. Структура 4H
+    structure = evaluation.get("structure")
+    if structure is not None:
+        marks = []
+        if structure.hh:
+            marks.append("HH")
+        if structure.hl:
+            marks.append("HL")
+        if structure.lh:
+            marks.append("LH")
+        if structure.ll:
+            marks.append("LL")
+        mark_str = "+".join(marks) if marks else "—"
+        lines.append(f"📈 4H структура: <b>{structure.direction}</b> ({mark_str})")
+
+    # 4. Уровни 4H (топ-3)
+    levels_4h = evaluation.get("levels_4h") or []
+    if levels_4h:
+        lines.append("")
+        lines.append("🎯 <b>Уровни 4H (топ-3):</b>")
+        for lv in levels_4h[:3]:
+            mirror = " 🔄" if lv.is_mirror else ""
+            worn = " ⚠️" if lv.is_worn else ""
+            lines.append(
+                f"  <code>{lv.price:,.2f}</code>  "
+                f"({lv.touches} кас.){mirror}{worn}"
+            )
+
+    # 5. Подтверждения
+    lines.append("")
+    lines.append("📊 <b>Подтверждения:</b>")
     for signal in evaluation.get("signals", []):
         lines.append(f"• {signal}")
 
+    # 6. Фильтры
     lines.append("")
     lines.append("🔍 <b>Фильтры:</b>")
-
     for f in evaluation.get("filters", []):
         lines.append(f"• {f}")
 
+    # 7. Итог
     lines.append("")
     lines.append(f"<b>Итого: {evaluation['score']}  →  {evaluation['verdict']}</b>")
 
