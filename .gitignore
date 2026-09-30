@@ -41,3 +41,10 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Временные файлы (тесты, экспорт, отладка)
+tmp.json
+tmp.json.bak
+tmp_*.json
+tmp_*.json.bak
+data/tmp/
