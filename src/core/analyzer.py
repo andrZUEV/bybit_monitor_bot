@@ -1,21 +1,39 @@
 """
 Модуль технического анализа с весами, штрафами и фильтрами контекста.
 
-Версия 3.0:
+Версия 4.0 (Этап 4):
 - Единый источник RSI/EMA — src/utils/indicators.py
-- count_touches корректно использует lookback_hours
-- Все индикаторы считаются на развёрнутых данных (порядок Bybit = новые первые)
-- Паттерн/тень/закрытие оцениваются по ЗАКРЫТОЙ свече [1]
-- Объём берётся по ТЕКУЩЕЙ свече [0] как раннее предупреждение
+- Структура тренда через find_hh_hl (HH/HL), а не только EMA50
+- Уровни через find_levels (4H / 1D)
+- Risk-модуль: build_setup → RiskResult в результате оценки
+- Обратная совместимость: без risk_cfg / klines_1h / klines_1d работает
+  как в 3.x
 """
 
 import logging
 import time
 from typing import Any
 
+from src.core.divergence import find_divergences
+from src.core.levels import (
+    Level,
+    TrendStructure,
+    find_hh_hl,
+    find_level_above,
+    find_level_below,
+    find_levels,
+)
+from src.core.risk import (
+    RiskConfig,
+    RiskResult,
+    build_setup,
+    format_reason_ru,
+)
 from src.utils.indicators import (
+    calculate_atr,
     calculate_ema_from_bybit,
     calculate_rsi,
+    calculate_rsi_series,
 )
 
 logger = logging.getLogger(__name__)
@@ -37,6 +55,7 @@ PENALTIES = {
     "worn_level": -1.5,
     "htf_against": -1.5,
     "old_alert": -1.0,
+    "hard_filter": -2.0,
 }
 
 THRESHOLDS = {
@@ -45,9 +64,19 @@ THRESHOLDS = {
     "volume_good": 1.8,
     "volume_low": 1.0,
     "alert_max_age_hours": 36,
-    "worn_touches": 5,            # по стратегии: 5+ касаний = изношен
-    "touch_tolerance_pct": 0.0015,  # 0.15%
+    "worn_touches": 5,
+    "touch_tolerance_pct": 0.0015,
     "touches_lookback_hours": 48,
+    # Этап 4:
+    "divergence_min_rsi_gap": 5.0,
+    "divergence_min_price_gap_pct": 0.001,
+    "divergence_max_lookback": 60,
+    "levels_tolerance_pct": 0.0015,
+    "levels_min_touches": 2,
+    "levels_cluster_eps_pct": 0.003,
+    "st_stop_lookback": 20,        # свечей 15m для поиска structure_stop
+    "atr_period": 14,
+    "atr_runway_mult": 2.0,        # запас хода ≥ N×ATR(1h)
 }
 
 # Периоды индикаторов
@@ -230,6 +259,92 @@ def calc_volume_ratio(
     return current_volume / avg_volume
 
 
+# ==================== НОВЫЕ ХЕЛПЕРЫ ЭТАПА 4 ====================
+
+def _calc_atr_15m(candles_15m: list[dict[str, float]]) -> float | None:
+    """ATR(14) на 15m свечах. Порядок Bybit (новые первые)."""
+    if len(candles_15m) < THRESHOLDS["atr_period"] + 1:
+        return None
+    highs = [c["high"] for c in candles_15m]
+    lows = [c["low"] for c in candles_15m]
+    closes = [c["close"] for c in candles_15m]
+    return calculate_atr(highs, lows, closes, period=THRESHOLDS["atr_period"])
+
+
+def _calc_atr_1h(candles_1h: list[dict[str, float]] | None) -> float | None:
+    """ATR(14) на 1H свечах. None если данных нет."""
+    if not candles_1h:
+        return None
+    if len(candles_1h) < THRESHOLDS["atr_period"] + 1:
+        return None
+    highs = [c["high"] for c in candles_1h]
+    lows = [c["low"] for c in candles_1h]
+    closes = [c["close"] for c in candles_1h]
+    return calculate_atr(highs, lows, closes, period=THRESHOLDS["atr_period"])
+
+
+def _structure_stop_15m(
+    candles_15m: list[dict[str, float]],
+    direction: str,
+    lookback: int = 20,
+) -> float | None:
+    """
+    Structure_stop для risk-модуля.
+    'up'  → минимум low за последние `lookback` свечей (исключая текущую [0]);
+    'down' → максимум high за тот же период.
+    """
+    if len(candles_15m) < 2:
+        return None
+    window = candles_15m[1:lookback + 1]
+    if not window:
+        return None
+    if direction == "up":
+        return min(c["low"] for c in window)
+    if direction == "down":
+        return max(c["high"] for c in window)
+    return None
+
+
+def _find_tp_levels(
+    entry: float,
+    direction: str,
+    levels_4h: list[Level],
+    atr_1h: float | None,
+    min_rr: float,
+    risk: float,
+) -> tuple[float, float]:
+    """
+    Собирает TP1 и TP2.
+
+    TP1 — ближайший уровень в сторону движения, строго выше/ниже entry.
+    TP2 — следующий уровень за TP1, либо entry + min_rr × risk,
+          если уровней мало.
+
+    Гарантирует TP2 > TP1 для long и TP2 < TP1 для short.
+    """
+    fallback_tp2_long = entry + min_rr * risk
+    fallback_tp2_short = entry - min_rr * risk
+
+    if direction == "up":
+        tp1_level = find_level_above(levels_4h, entry)
+        tp1 = tp1_level.price if tp1_level else fallback_tp2_long
+        # следующий уровень за TP1
+        tp2_level = find_level_above(levels_4h, tp1 + 1e-9)
+        tp2 = tp2_level.price if tp2_level else max(tp1 * 1.01, fallback_tp2_long)
+        if tp2 <= tp1:
+            tp2 = max(tp1 * 1.01, fallback_tp2_long)
+        return tp1, tp2
+
+    # direction == "down"
+    tp1_level = find_level_below(levels_4h, entry)
+    tp1 = tp1_level.price if tp1_level else fallback_tp2_short
+    tp2_level = find_level_below(levels_4h, tp1 - 1e-9)
+    tp2 = tp2_level.price if tp2_level else min(tp1 * 0.99, fallback_tp2_short)
+    if tp2 >= tp1:
+        tp2 = min(tp1 * 0.99, fallback_tp2_short)
+    return tp1, tp2
+
+
 # ==================== ГЛАВНАЯ ФУНКЦИЯ ОЦЕНКИ ====================
 
 def evaluate_alert(
@@ -240,33 +355,61 @@ def evaluate_alert(
     alert_created_at: float,
     klines_15m: list[list],
     klines_4h: list[list],
+    klines_1h: list[list] | None = None,
+    klines_1d: list[list] | None = None,
+    *,
+    risk_cfg: RiskConfig | None = None,
 ) -> dict[str, Any]:
     """
-    Оценивает алерт по системе весов и штрафов.
+    Оценивает алерт. Версия 4.0 — с интегрированным risk-модулем.
+
+    Args:
+        klines_15m: рабочий ТФ (Bybit-порядок, новые первые).
+        klines_4h: старший ТФ для тренда и уровней.
+        klines_1h: опциональный 1H для ATR-1h.
+        klines_1d: опциональный 1D для «бетонных» уровней.
+        risk_cfg: если задан → собираем RiskResult (Entry/SL/TP1/TP2/RR/size).
 
     Returns:
-        Словарь с оценкой, вердиктом, signals и filters.
+        Прежний dict + новые ключи:
+          - "structure": TrendStructure | None
+          - "levels_4h": list[Level]
+          - "levels_1d": list[Level]
+          - "divergence": dict | None
+          - "risk": RiskResult | None
+          - "hard_filter": str | None      (reason если valid=False)
+          - "hard_filter_ru": str | None   (перевод)
     """
     candles_15m = parse_klines(klines_15m)
     candles_4h = parse_klines(klines_4h)
+    candles_1h = parse_klines(klines_1h) if klines_1h else None
+
+    # значения по умолчанию для пустого результата
+    empty = {
+        "score": 0.0,
+        "verdict": "❌ None",
+        "signals": ["Недостаточно данных"],
+        "filters": [],
+        "vol_ratio": 0.0,
+        "rsi": None,
+        "touches": 0,
+        "htf_trend": "side",
+        "age_hours": 0,
+        "pattern": None,
+        "strength_score": 0,
+        "details": ["Недостаточно данных"],
+        "structure": None,
+        "levels_4h": [],
+        "levels_1d": [],
+        "divergence": None,
+        "risk": None,
+        "hard_filter": None,
+        "hard_filter_ru": None,
+    }
 
     if len(candles_15m) < 3:
-        return {
-            "score": 0.0,
-            "verdict": "❌ None",
-            "signals": ["Недостаточно данных"],
-            "filters": [],
-            "vol_ratio": 0.0,
-            "rsi": None,
-            "touches": 0,
-            "htf_trend": "side",
-            "age_hours": 0,
-            "pattern": None,
-            "strength_score": 0,
-            "details": ["Недостаточно данных"],
-        }
+        return empty
 
-    # ЗАКРЫТАЯ свеча [1] и предыдущая [2]
     last_closed = candles_15m[1]
     prev_closed = candles_15m[2]
 
@@ -282,14 +425,15 @@ def evaluate_alert(
         "bullish_engulfing": "Бычье поглощение",
         "bearish_engulfing": "Медвежье поглощение",
     }
-
     if pattern:
         score += WEIGHTS["pattern"]
-        signals.append(f"Паттерн: {pattern_names.get(pattern, pattern)} +{WEIGHTS['pattern']}")
+        signals.append(
+            f"Паттерн: {pattern_names.get(pattern, pattern)} +{WEIGHTS['pattern']}"
+        )
     else:
         signals.append("Паттерн: нет")
 
-    # 2. Объём (по ТЕКУЩЕЙ свече [0])
+    # 2. Объём
     vol_ratio = calc_volume_ratio(candles_15m, periods=VOLUME_AVG_PERIODS)
     if vol_ratio >= THRESHOLDS["volume_good"]:
         score += WEIGHTS["volume"]
@@ -300,14 +444,14 @@ def evaluate_alert(
     else:
         signals.append(f"Объём: {vol_ratio:.1f}x (нейтрально)")
 
-    # 3. Тень за уровнем
+    # 3. Тень
     if has_wick_beyond_level(last_closed, level, direction):
         score += WEIGHTS["wick"]
         signals.append(f"Тень за уровнем: да +{WEIGHTS['wick']}")
     else:
         signals.append("Тень за уровнем: нет")
 
-    # 4. Закрытие в нужной трети
+    # 4. Закрытие в трети
     if close_in_correct_third(last_closed, direction):
         score += WEIGHTS["close_third"]
         signals.append(f"Закрытие: правильная треть +{WEIGHTS['close_third']}")
@@ -315,13 +459,11 @@ def evaluate_alert(
         signals.append("Закрытие: не в нужной трети")
 
     # 5. RSI
-    closes = [c["close"] for c in candles_15m]  # новые первые
-    rsi = calculate_rsi(closes, period=RSI_PERIOD)  # внутри корректно развернёт
-
+    closes_15m = [c["close"] for c in candles_15m]
+    rsi = calculate_rsi(closes_15m, period=RSI_PERIOD)
     if rsi is not None:
         rsi_ok = (direction == "up" and rsi < 40) or (direction == "down" and rsi > 60)
         rsi_against = (direction == "up" and rsi > 60) or (direction == "down" and rsi < 40)
-
         if rsi_ok:
             score += WEIGHTS["rsi"]
             signals.append(f"RSI: {rsi:.1f} (в зоне) +{WEIGHTS['rsi']}")
@@ -333,32 +475,99 @@ def evaluate_alert(
     else:
         signals.append("RSI: нет данных")
 
-    # 6. Изношенность уровня
+    # 6. Дивергенция RSI (новое в 4.x)
+    divergence_info: dict | None = None
+    if rsi is not None:
+        rsi_series = calculate_rsi_series(closes_15m, period=RSI_PERIOD)
+        divs = find_divergences(
+            closes_15m, rsi_series, direction,
+            min_rsi_gap=THRESHOLDS["divergence_min_rsi_gap"],
+            min_price_gap_pct=THRESHOLDS["divergence_min_price_gap_pct"],
+            max_lookback=THRESHOLDS["divergence_max_lookback"],
+        )
+        if divs:
+            d = divs[0]
+            divergence_info = {
+                "kind": d.kind,
+                "rsi_gap": round(d.rsi_gap, 1),
+                "price_gap_pct": round(d.price_gap_pct * 100, 2),
+                "age_bars": d.age_bars,
+            }
+            score += 1.5
+            signals.append(
+                f"RSI-дивергенция ({d.kind}), gap {d.rsi_gap:.0f}, "
+                f"{d.age_bars} бар. +1.5"
+            )
+        else:
+            signals.append("RSI-дивергенция: нет")
+
+    # 7. Касания уровня (legacy)
     touches = count_touches(
-        candles_15m,
-        level,
+        candles_15m, level,
         timeframe_minutes=15,
         lookback_hours=THRESHOLDS["touches_lookback_hours"],
     )
     if touches >= THRESHOLDS["worn_touches"]:
         score += PENALTIES["worn_level"]
-        filters.append(
-            f"Уровень изношен ({touches} касаний) {PENALTIES['worn_level']}"
-        )
+        filters.append(f"Уровень изношен ({touches} касаний) {PENALTIES['worn_level']}")
     else:
         filters.append(f"Уровень свежий ({touches} касаний)")
 
-    # 7. 4H тренд
-    htf_trend = get_htf_trend(candles_4h)
-    if (direction == "up" and htf_trend == "down") or (
-        direction == "down" and htf_trend == "up"
-    ):
-        score += PENALTIES["htf_against"]
-        filters.append(f"4H против направления {PENALTIES['htf_against']}")
-    else:
-        filters.append(f"4H: {htf_trend}")
+    # 8. Уровни 4H/1D (новое)
+    levels_4h: list[Level] = []
+    levels_1d: list[Level] = []
+    if klines_4h:
+        levels_4h = find_levels(
+            klines_4h, source_tf="240",
+            tolerance_pct=THRESHOLDS["levels_tolerance_pct"],
+            min_touches=THRESHOLDS["levels_min_touches"],
+            worn_touches=THRESHOLDS["worn_touches"],
+            cluster_eps_pct=THRESHOLDS["levels_cluster_eps_pct"],
+        )
+    if klines_1d:
+        levels_1d = find_levels(
+            klines_1d, source_tf="D",
+            tolerance_pct=THRESHOLDS["levels_tolerance_pct"],
+            min_touches=THRESHOLDS["levels_min_touches"],
+            worn_touches=THRESHOLDS["worn_touches"],
+            cluster_eps_pct=THRESHOLDS["levels_cluster_eps_pct"],
+        )
+    if levels_4h:
+        filters.append(f"Уровней 4H: {len(levels_4h)}")
+    if levels_1d:
+        filters.append(f"Уровней 1D: {len(levels_1d)}")
 
-    # 8. Возраст алерта
+    # 9. Структура тренда (новое) + legacy htf_trend
+    structure: TrendStructure | None = None
+    htf_trend_legacy = get_htf_trend(candles_4h)  # эта функция хочет dict — оставляем
+
+    if klines_4h:
+        structure = find_hh_hl(
+            klines_4h, lookback=min(len(klines_4h), 100),
+        )
+
+    # 4H-тренд для risk: up/down/side → long/short/None
+    trend_4h_dir: str | None = None
+    if structure and structure.direction == "up":
+        trend_4h_dir = "long"
+    elif structure and structure.direction == "down":
+        trend_4h_dir = "short"
+
+    # Реакция score на тренд против
+    if structure and structure.direction != "side":
+        against = (
+            (direction == "up" and structure.direction == "down")
+            or (direction == "down" and structure.direction == "up")
+        )
+        if against:
+            score += PENALTIES["htf_against"]
+            filters.append(f"4H против направления {PENALTIES['htf_against']}")
+        else:
+            filters.append(f"4H структура: {structure.direction} (согласовано)")
+    else:
+        filters.append(f"4H структура: side (legacy EMA: {htf_trend_legacy})")
+
+    # 10. Возраст алерта
     age_hours = max(0, (time.time() - alert_created_at) / 3600)
     if age_hours > THRESHOLDS["alert_max_age_hours"]:
         score += PENALTIES["old_alert"]
@@ -366,7 +575,72 @@ def evaluate_alert(
     else:
         filters.append(f"Возраст алерта: {age_hours:.0f}ч")
 
-    # 9. Вердикт
+    # 11. Risk-модуль (новое, только если передан risk_cfg)
+    risk_result: RiskResult | None = None
+    hard_filter: str | None = None
+    hard_filter_ru: str | None = None
+
+    if risk_cfg is not None:
+        atr_15m = _calc_atr_15m(candles_15m)
+        atr_1h = _calc_atr_1h(candles_1h)
+
+        # ATR для runway — 1h, если есть, иначе 15m
+        atr_for_runway = atr_1h if atr_1h is not None else atr_15m
+        # ATR для стопа — 15m
+        atr_for_stop = atr_15m
+
+        if atr_for_stop and atr_for_stop > 0:
+            risk_dir = "long" if direction == "up" else "short"
+            structure_stop = _structure_stop_15m(
+                candles_15m, direction,
+                lookback=THRESHOLDS["st_stop_lookback"],
+            )
+            entry = current_price
+
+            # risk в единицах цены: |entry - structure_stop| или ATR-фолбэк
+            if structure_stop is not None:
+                risk_per_unit = abs(entry - structure_stop)
+            else:
+                risk_per_unit = atr_for_stop * risk_cfg.atr_multiplier
+            if risk_per_unit <= 0:
+                risk_per_unit = atr_for_stop * risk_cfg.atr_multiplier
+
+            tp1, tp2 = _find_tp_levels(
+                entry, direction, levels_4h,
+                atr_for_runway, risk_cfg.min_rr, risk_per_unit,
+            )
+
+            # если runway считаем по atr_1h, риск для стопа по 15m,
+            # передаём в validate_setup средний ATR (для runway-проверки)
+            atr_for_validate = atr_for_runway or atr_for_stop
+            risk_result = build_setup(
+                entry=entry,
+                structure_stop=structure_stop,
+                atr=atr_for_validate,
+                direction=risk_dir,
+                tp1=tp1,
+                tp2=tp2,
+                cfg=risk_cfg,
+                trend_4h=trend_4h_dir,
+            )
+
+            if not risk_result.valid:
+                hard_filter = risk_result.reason or "unknown"
+                hard_filter_ru = format_reason_ru(hard_filter)
+                score += PENALTIES["hard_filter"]
+                filters.append(
+                    f"⛔ Hard filter: {hard_filter_ru} "
+                    f"({PENALTIES['hard_filter']})"
+                )
+            else:
+                filters.append(
+                    f"Risk OK: RR={risk_result.rr:.2f} "
+                    f"size={risk_result.size:.4f}"
+                )
+        else:
+            filters.append("ATR(15m) недоступен → risk не посчитан")
+
+    # 12. Вердикт
     if score >= THRESHOLDS["strong_min"]:
         verdict = "💪 Strong"
     elif score >= THRESHOLDS["weak_min"]:
@@ -382,12 +656,19 @@ def evaluate_alert(
         "vol_ratio": vol_ratio,
         "rsi": round(rsi, 1) if rsi else None,
         "touches": touches,
-        "htf_trend": htf_trend,
+        "htf_trend": htf_trend_legacy,
         "age_hours": round(age_hours, 1),
         "pattern": pattern,
-        # Для обратной совместимости
         "strength_score": max(0, int(score)),
         "details": signals + filters,
+        # Этап 4:
+        "structure": structure,
+        "levels_4h": levels_4h,
+        "levels_1d": levels_1d,
+        "divergence": divergence_info,
+        "risk": risk_result,
+        "hard_filter": hard_filter,
+        "hard_filter_ru": hard_filter_ru,
     }
 
 
