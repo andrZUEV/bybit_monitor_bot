@@ -277,11 +277,11 @@ def build_setup(
 REASON_RU: dict[str, str] = {
     "risk_above_max":      "Риск на сделку > 1%",
     "trend_conflict":      "4H-тренд против направления входа",
-    "rr_below_min":        "RR < 1:3",
+    "rr_below_min":        "RR < 1:3",              # ← оставить как есть
     "atr_invalid":         "ATR недоступен/невалиден",
-    "insufficient_runway": "Запас хода до TP1 < 2×ATR",
+    "insufficient_runway": "Запас хода до TP1 < 2×ATR",  # ← оставить
     "size_below_min":      "Размер позиции < минимального лота",
-    "":                    "",  # valid
+    "":                    "",
 }
 
 SOFT_REASON_RU: dict[str, str] = {

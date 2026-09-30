@@ -193,3 +193,36 @@ def test_setup_note_present():
         setup_note="reversal at 100",
     )
     assert "📝 <b>Сетап:</b> <code>reversal at 100</code>" in msg
+
+def test_html_escape_in_hard_filter():
+    ev = _legacy_evaluation()
+    ev["hard_filter_ru"] = "RR < 1:3"
+    msg = format_alert_message(
+        symbol="BTCUSDT", level=100.0, direction="up",
+        current_price=101.0, evaluation=ev,
+    )
+    assert "RR &lt; 1:3" in msg
+    # И «сырой» < не остался
+    assert "RR < 1:3" not in msg
+
+
+def test_html_escape_in_setup_note():
+    msg = format_alert_message(
+        symbol="BTCUSDT", level=100.0, direction="up",
+        current_price=101.0, evaluation=_legacy_evaluation(),
+        setup_note="risk < 1% & watch > 121",
+    )
+    assert "&lt; 1% &amp; watch &gt; 121" in msg
+    # Сырой < не должен остаться
+    assert "< 1%" not in msg
+
+
+def test_html_escape_in_signals():
+    ev = _legacy_evaluation()
+    ev["signals"] = ["Volume > 3x", "wick < level"]
+    msg = format_alert_message(
+        symbol="BTCUSDT", level=100.0, direction="up",
+        current_price=101.0, evaluation=ev,
+    )
+    assert "Volume &gt; 3x" in msg
+    assert "wick &lt; level" in msg

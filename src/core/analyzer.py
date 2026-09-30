@@ -38,6 +38,14 @@ from src.utils.indicators import (
 
 logger = logging.getLogger(__name__)
 
+def _html_escape(text: str) -> str:
+    """Экранирует &<> для безопасной вставки в Telegram HTML."""
+    return (
+        text.replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+    )
+
 
 # ==================== КОНФИГУРАЦИЯ ====================
 
@@ -683,13 +691,14 @@ def format_alert_message(
     """
     Форматирует сообщение алерта в HTML для Telegram.
 
-    Версия 4.5:
-      - плашка ⛔ Hard filter в начале, если evaluation["hard_filter_ru"];
+    Версия 4.5.1:
+      - плашка ⛔ Hard filter в начале;
       - секция 📐 План сделки: Entry / SL / TP1 / TP2 / RR / size;
       - структура тренда 4H: up (HH+HL);
       - топ-3 уровня 4H.
 
-    Обратная совместимость: если новых ключей нет — формат прежний.
+    Все динамические строки (hard_filter_ru, signals, filters, setup_note)
+    проходят через _html_escape — иначе `<` в тексте ломает Telegram.
     """
     cross_text = "🟢 СНИЗУ ВВЕРХ" if direction == "up" else "🔴 СВЕРХУ ВНИЗ"
     lines: list[str] = []
@@ -697,11 +706,13 @@ def format_alert_message(
     # 0. Hard filter — плашка сверху
     hard_filter_ru = evaluation.get("hard_filter_ru")
     if hard_filter_ru:
-        lines.append(f"⛔ <b>СДЕЛКА НЕ ПО СТРАТЕГИИ:</b> {hard_filter_ru}")
+        lines.append(
+            f"⛔ <b>СДЕЛКА НЕ ПО СТРАТЕГИИ:</b> {_html_escape(hard_filter_ru)}"
+        )
         lines.append("")
 
     # 1. Шапка
-    lines.append(f"🚨 <b>Price Alert: {symbol}</b>")
+    lines.append(f"🚨 <b>Price Alert: {_html_escape(symbol)}</b>")
     lines.append(f"Уровень: <code>{level:,.2f}</code> | {cross_text}")
     lines.append(f"💰 Цена: <code>{current_price:,.2f}</code>")
 
@@ -759,20 +770,20 @@ def format_alert_message(
     lines.append("")
     lines.append("📊 <b>Подтверждения:</b>")
     for signal in evaluation.get("signals", []):
-        lines.append(f"• {signal}")
+        lines.append(f"• {_html_escape(signal)}")
 
     # 6. Фильтры
     lines.append("")
     lines.append("🔍 <b>Фильтры:</b>")
     for f in evaluation.get("filters", []):
-        lines.append(f"• {f}")
+        lines.append(f"• {_html_escape(f)}")
 
     # 7. Итог
     lines.append("")
     lines.append(f"<b>Итого: {evaluation['score']}  →  {evaluation['verdict']}</b>")
 
     if setup_note:
-        lines.append(f"📝 <b>Сетап:</b> <code>{setup_note}</code>")
+        lines.append(f"📝 <b>Сетап:</b> <code>{_html_escape(setup_note)}</code>")
 
     return "\n".join(lines)
 
