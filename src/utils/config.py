@@ -68,6 +68,16 @@ class Config:
     # ==================== Логирование ====================
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
+    # ==================== Порог алертов ====================
+    # Пресеты для кнопки «⚙️ Настройки» в боте.
+    # -inf = слать всё (режим тестов). Чем больше — тем «жёстче» фильтр.
+    ALERT_SCORE_PRESETS: tuple[float, ...] = (
+        float("-inf"),  # ВСЕ
+        -5.0,
+        0.0,
+        3.0,
+    )
+
     # ==================== Лимиты свечей ====================
     # Сколько свечей запрашивать при экспорте по каждому ТФ.
     # Больше свечей = качественнее анализ, но больше CSV.
@@ -110,9 +120,10 @@ class Config:
     DATA_DIR: Path = PROJECT_ROOT / "data"
     EXPORTS_DIR: Path = DATA_DIR / "exports"
     LOGS_DIR: Path = PROJECT_ROOT / "logs"
-
+    
     ALERTS_FILE: Path = DATA_DIR / "alerts.json"
     COOLDOWNS_FILE: Path = DATA_DIR / "cooldowns.json"
+    SETTINGS_FILE: Path = DATA_DIR / "settings.json"
 
     # ==================== Валидация ====================
     @classmethod
@@ -130,6 +141,5 @@ Config.DATA_DIR.mkdir(parents=True, exist_ok=True)
 Config.EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
 Config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
-# ==================== Риск-менеджмент ====================
 
     

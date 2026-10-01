@@ -98,3 +98,81 @@ def skip_note_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton("🏠 Отмена", callback_data="menu_main")],
     ]
     return InlineKeyboardMarkup(keyboard)
+
+# ==================== НАСТРОЙКИ ====================
+
+def main_menu_keyboard_with_settings(threshold_describe: str) -> InlineKeyboardMarkup:
+    """
+    Главное меню с кнопкой настроек, показывающей текущий порог.
+
+    threshold_describe — результат RuntimeSettings.describe(), например 'ВСЕ' или '≥ 0'.
+    """
+    keyboard = [
+        [InlineKeyboardButton("➕ Добавить алерт", callback_data="menu_add")],
+        [InlineKeyboardButton("🔍 Скринер", callback_data="menu_screener")],
+        [InlineKeyboardButton("💰 Текущие цены", callback_data="menu_prices")],
+        [InlineKeyboardButton("📋 Мои алерты", callback_data="menu_list")],
+        [InlineKeyboardButton("📊 Выгрузить данные", callback_data="menu_export")],
+        [InlineKeyboardButton(
+            f"⚙️ Настройки (порог: {threshold_describe})",
+            callback_data="settings_menu",
+        )],
+        [InlineKeyboardButton("ℹ️ Помощь", callback_data="menu_help")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def settings_menu_keyboard(threshold_describe: str) -> InlineKeyboardMarkup:
+    """Меню настроек: пока одна опция — порог алертов."""
+    keyboard = [
+        [InlineKeyboardButton(
+            f"⚙️ Порог алертов: {threshold_describe}",
+            callback_data="settings_threshold",
+        )],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def threshold_presets_keyboard(
+    presets: tuple[float, ...],
+    current: float,
+) -> InlineKeyboardMarkup:
+    """
+    Выбор порога из пресетов.
+
+    presets — кортеж порогов из Config.ALERT_SCORE_PRESETS.
+    current — текущий порог, чтобы отметить активный ✅.
+    """
+    keyboard: list[list[InlineKeyboardButton]] = []
+
+    # Пресеты в один ряд (или два, если их много)
+    row: list[InlineKeyboardButton] = []
+    for p in presets:
+        label = "ВСЕ" if p == float("-inf") else f"≥ {p:g}"
+        if abs(p - current) < 1e-9:
+            label = f"✅ {label}"
+        # callback_data: set_score|<value>  (значение передаём строкой)
+        cb = f"set_score|{p}"
+        row.append(InlineKeyboardButton(label, callback_data=cb))
+
+    # Разбиваем по 2 в ряд, чтобы не было слишком широко
+    for i in range(0, len(row), 2):
+        keyboard.append(row[i:i + 2])
+
+    keyboard.append([
+        InlineKeyboardButton("✏️ Свой порог", callback_data="set_score_custom")
+    ])
+    keyboard.append([
+        InlineKeyboardButton("◀ Назад", callback_data="settings_menu")
+    ])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def settings_custom_score_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура при вводе своего порога вручную."""
+    keyboard = [
+        [InlineKeyboardButton("◀ Назад", callback_data="settings_threshold")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
+    ]
+    return InlineKeyboardMarkup(keyboard)

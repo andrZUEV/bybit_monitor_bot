@@ -20,6 +20,8 @@ from telegram.ext import ContextTypes
 
 from src.api.bybit_client import BybitClient
 from src.core.alerts import AlertsManager
+from src.core.settings import get_settings
+from src.parsers.mass_add import parse_mass_add
 from src.telegram import keyboards
 from src.utils.config import Config
 from src.utils.indicators import calculate_rsi_series
@@ -50,6 +52,11 @@ class TelegramHandlers:
 
     def _reset_state(self, chat_id: int) -> None:
         self.user_state.pop(chat_id, None)
+    
+    def _main_menu_kb(self):
+        """Главное меню с актуальным значением порога."""
+        s = get_settings()
+        return keyboards.main_menu_keyboard_with_settings(s.describe())
 
     # ==================== КОМАНДЫ ====================
 
@@ -68,7 +75,7 @@ class TelegramHandlers:
             f"• Кулдаун: <b>{Config.ALERT_COOLDOWN_MINUTES} мин</b>\n\n"
             "Выберите действие:",
             parse_mode="HTML",
-            reply_markup=keyboards.main_menu_keyboard(),
+            reply_markup=self._main_menu_kb(),
         )
 
     async def menu_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -78,7 +85,18 @@ class TelegramHandlers:
         await update.message.reply_text(
             "🏠 <b>Главное меню</b>",
             parse_mode="HTML",
-            reply_markup=keyboards.main_menu_keyboard(),
+            reply_markup=self._main_menu_kb(),
+        )
+    
+    async def settings_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not self._is_allowed(update):
+            return
+        s = get_settings()
+        await update.message.reply_text(
+            f"⚙️ <b>Настройки</b>\n\n"
+            f"Порог алертов: <b>{s.describe()}</b>",
+            parse_mode="HTML",
+            reply_markup=keyboards.settings_menu_keyboard(s.describe()),
         )
 
     async def list_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -187,60 +205,85 @@ class TelegramHandlers:
             await self._finalize_add_alert(update, state, note, chat_id)
             return
 
+        # --- Настройки: ввод своего порога ---
+        if step == "waiting_custom_score":
+            from src.core.settings import RuntimeSettings as _RS
+            new_score = _RS._parse_score(text.strip(), default=None)  # type: ignore[arg-type]
+            if new_score is None:
+                await update.message.reply_text(
+                    "❌ Не понял число. Введите, например, "
+                    "<code>-2.5</code> или <code>all</code>.",
+                    parse_mode="HTML",
+                    reply_markup=keyboards.settings_custom_score_keyboard(),
+                )
+                return
+            s = get_settings()
+            s.alert_min_score = new_score
+            s.save()
+            self._reset_state(chat_id)
+            logger.info(f"⚙️ Порог алертов изменён: {s.describe()}")
+            await update.message.reply_text(
+                f"✅ Порог установлен: <b>{s.describe()}</b>",
+                parse_mode="HTML",
+                reply_markup=keyboards.settings_menu_keyboard(s.describe()),
+            )
+            return        
+
         # --- Массовое добавление (текстом, без диалога) ---
-        lines = [line.strip() for line in text.split("\n") if line.strip()]
-        if len(lines) > 1:
-            await self._process_bulk_add(update, lines)
+        if "\n" in text.strip():
+            await self._process_bulk_add(update, text)
             return
 
-        # --- Однострочный формат: SYMBOL PRICE DIR [NOTE] ---
-        parts = text.split(maxsplit=3)
-        if len(parts) >= 3:
-            symbol = parts[0].strip().upper()
-            if not symbol.endswith("USDT"):
-                symbol += "USDT"
-            try:
-                price = float(parts[1].replace(",", "."))
-                direction = parts[2].lower()
-                note = parts[3] if len(parts) > 3 else ""
-                if direction in ["up", "down", "any"] and len(symbol) >= 4:
-                    category = (
-                        "spot"
-                        if "spot" in note.lower() or "спот" in note.lower()
-                        else "linear"
-                    )
-                    clean_note = note.replace("spot", "").replace("спот", "").strip()
-                    success, replaced = self.alerts_manager.add_alert(
-                        symbol, price, direction, category, clean_note
-                    )
-                    dir_text = {
-                        "up": "снизу вверх 🟢",
-                        "down": "сверху вниз 🔴",
-                        "any": "любое ⚪️",
-                    }
-                    note_display = f"\n📝 Сетап: <code>{clean_note}</code>" if clean_note else ""
-                    if success:
-                        verb = "Обновлено" if replaced else "Добавлено"
-                        await update.message.reply_text(
-                            f"✅ <b>{verb}:</b>\n"
-                            f"🪙 {symbol}\n💰 {price:,.2f}\n"
-                            f"🎯 {dir_text[direction]}{note_display}",
-                            parse_mode="HTML",
-                            reply_markup=keyboards.main_menu_keyboard(),
-                        )
-                    else:
-                        await update.message.reply_text(
-                            "⚠️ Уже существует",
-                            reply_markup=keyboards.main_menu_keyboard(),
-                        )
-                    return
-            except ValueError:
-                pass
+        # --- Однострочное добавление: SYMBOL PRICE DIR [NOTE] ---
+        result = parse_mass_add(text)
+        if result.valid:
+            if len(result.valid) > 1:
+                logger.warning(
+                    f"⚠️ handle_text: неожиданно >1 valid без '\\n' в text={text!r}; "
+                    f"ухожу в bulk"
+                )
+                await self._process_bulk_add(update, text)
+                return
+            p = result.valid[0]
+            note_lower = (p.setup_note or "").lower()
+            category = (
+                "spot"
+                if "spot" in note_lower or "спот" in note_lower
+                else "linear"
+            )
+            clean_note = p.setup_note or ""
+            success, replaced = self.alerts_manager.add_alert(
+                p.symbol, p.price, p.direction, category, clean_note
+            )
+            dir_text = {
+                "up": "снизу вверх 🟢",
+                "down": "сверху вниз 🔴",
+                "any": "любое ⚪️",
+            }
+            note_display = f"\n📝 Сетап: <code>{clean_note}</code>" if clean_note else ""
+            if success:
+                verb = "Обновлено" if replaced else "Добавлено"
+                await update.message.reply_text(
+                    f"✅ <b>{verb}:</b>\n"
+                    f"🪙 {p.symbol}\n💰 {p.price:,.2f}\n"
+                    f"🎯 {dir_text[p.direction]}{note_display}",
+                    parse_mode="HTML",
+                    reply_markup=self._main_menu_kb(),
+                )
+            else:
+                await update.message.reply_text(
+                    "⚠️ Уже существует",
+                    reply_markup=self._main_menu_kb(),
+                )
+            return
 
+        # Если не распарсили — общий «не понял»
         await update.message.reply_text(
-            "❓ Не понял команду.",
+            "❓ Не понял команду. Проверьте формат:\n"
+            "<code>TICKER PRICE DIR [ОПИСАНИЕ]</code>\n"
+            "Например: <code>BTC 65000 up пробой хая</code>",
             parse_mode="HTML",
-            reply_markup=keyboards.main_menu_keyboard(),
+            reply_markup=self._main_menu_kb(),
         )
 
     async def _handle_export_tickers(self, update: Update, text: str, chat_id: int):
@@ -268,7 +311,7 @@ class TelegramHandlers:
                 f"Можно писать как <code>BTC ETH</code>, так и <code>BTCUSDT ETHUSDT</code>.\n"
                 f"Проверьте написание (например, <code>XRP</code>, а не <code>XPR</code>).",
                 parse_mode="HTML",
-                reply_markup=keyboards.main_menu_keyboard(),
+                reply_markup=self._main_menu_kb(),
             )
             self._reset_state(chat_id)
             return
@@ -320,71 +363,58 @@ class TelegramHandlers:
                 f"🪙 {symbol}\n💰 {price:,.2f}\n"
                 f"🎯 {dir_text.get(direction, direction)}{note_display}",
                 parse_mode="HTML",
-                reply_markup=keyboards.main_menu_keyboard(),
+                reply_markup=self._main_menu_kb(),
             )
         else:
             await update.message.reply_text(
                 "⚠️ Не удалось сохранить алерт",
-                reply_markup=keyboards.main_menu_keyboard(),
+                reply_markup=self._main_menu_kb(),
             )
 
         self._reset_state(chat_id)
 
-    async def _process_bulk_add(self, update: Update, lines: list[str]):
-        success_count = replaced_count = fail_count = 0
-        failed_details = []
+    async def _process_bulk_add(self, update: Update, text: str):
+        result = parse_mass_add(text)
 
-        for line in lines:
-            if line.startswith("#") or line.startswith("//"):
-                continue
-            parts = line.split(maxsplit=3)
-            if len(parts) >= 3:
-                symbol = parts[0].strip().upper()
-                if not symbol.endswith("USDT"):
-                    symbol += "USDT"
-                try:
-                    price = float(parts[1].replace(",", "."))
-                    direction = parts[2].lower()
-                    note = parts[3] if len(parts) > 3 else ""
-                    category = (
-                        "spot"
-                        if "spot" in note.lower() or "спот" in note.lower()
-                        else "linear"
-                    )
-                    clean_note = note.replace("spot", "").replace("спот", "").strip()
-                    if direction in ["up", "down", "any"] and len(symbol) >= 4:
-                        success, replaced = self.alerts_manager.add_alert(
-                            symbol, price, direction, category, clean_note
-                        )
-                        if success:
-                            if replaced:
-                                replaced_count += 1
-                            else:
-                                success_count += 1
-                        else:
-                            fail_count += 1
-                            failed_details.append(f"• {line} (ошибка)")
-                    else:
-                        fail_count += 1
-                        failed_details.append(f"• {line} (ошибка направления)")
-                except ValueError:
-                    fail_count += 1
-                    failed_details.append(f"• {line} (ошибка цены)")
+        success_count = 0
+        replaced_count = 0
+        failed_details: list[str] = []
+
+        for p in result.valid:
+            note_lower = (p.setup_note or "").lower()
+            category = (
+                "spot"
+                if "spot" in note_lower or "спот" in note_lower
+                else "linear"
+            )
+            clean_note = p.setup_note or ""
+            success, replaced = self.alerts_manager.add_alert(
+                p.symbol, p.price, p.direction, category, clean_note
+            )
+            if success:
+                if replaced:
+                    replaced_count += 1
+                else:
+                    success_count += 1
             else:
-                fail_count += 1
-                failed_details.append(f"• {line} (формат)")
+                failed_details.append(f"• {p.raw} (не сохранилось)")
+
+        for s in result.skipped:
+            failed_details.append(f"• строка {s.line_no}: {s.raw} — {s.reason}")
 
         report = "📊 <b>Результат:</b>\n"
         report += f"✅ Добавлено: <b>{success_count}</b>\n"
         if replaced_count:
             report += f"🔄 Обновлено: <b>{replaced_count}</b>\n"
-        if fail_count > 0:
-            report += f"❌ Ошибок: <b>{fail_count}</b>\n" + "\n".join(failed_details[:5])
+        if result.skipped or failed_details:
+            report += f"❌ Пропущено: <b>{len(result.skipped)}</b>\n"
+            if failed_details:
+                report += "\n".join(failed_details[:5]) + "\n"
         else:
             report += "\n🎉 Всё обработано!"
 
         await update.message.reply_text(
-            report, parse_mode="HTML", reply_markup=keyboards.main_menu_keyboard()
+            report, parse_mode="HTML", reply_markup=self._main_menu_kb()
         )
 
     # ==================== CALLBACK'И ====================
@@ -410,7 +440,7 @@ class TelegramHandlers:
             await query.edit_message_text(
                 "🏠 <b>Главное меню</b>",
                 parse_mode="HTML",
-                reply_markup=keyboards.main_menu_keyboard(),
+                reply_markup=self._main_menu_kb(),
             )
 
         elif data == "menu_add":
@@ -451,7 +481,7 @@ class TelegramHandlers:
             if not assets:
                 await query.edit_message_text(
                     "📋 Нет отслеживаемых активов.",
-                    reply_markup=keyboards.main_menu_keyboard(),
+                    reply_markup=self._main_menu_kb(),
                 )
                 return
             symbols = list({a.symbol for a in assets})
@@ -467,11 +497,11 @@ class TelegramHandlers:
                     )
                 os.remove(filepath)
                 await query.edit_message_text(
-                    "✅ Файл отправлен!", reply_markup=keyboards.main_menu_keyboard()
+                    "✅ Файл отправлен!", reply_markup=self._main_menu_kb()
                 )
             else:
                 await query.edit_message_text(
-                    "❌ Ошибка экспорта", reply_markup=keyboards.main_menu_keyboard()
+                    "❌ Ошибка экспорта", reply_markup=self._main_menu_kb()
                 )
 
         elif data == "export_manual":
@@ -487,7 +517,7 @@ class TelegramHandlers:
             if not self._last_screener_results:
                 await query.edit_message_text(
                     "⚠️ Сначала запустите скринер.",
-                    reply_markup=keyboards.main_menu_keyboard(),
+                    reply_markup=self._main_menu_kb(),
                 )
                 return
             symbols = [asset.symbol for asset in self._last_screener_results]
@@ -505,11 +535,11 @@ class TelegramHandlers:
                     )
                 os.remove(filepath)
                 await query.edit_message_text(
-                    "✅ Файл отправлен!", reply_markup=keyboards.main_menu_keyboard()
+                    "✅ Файл отправлен!", reply_markup=self._main_menu_kb()
                 )
             else:
                 await query.edit_message_text(
-                    "❌ Ошибка экспорта", reply_markup=keyboards.main_menu_keyboard()
+                    "❌ Ошибка экспорта", reply_markup=self._main_menu_kb()
                 )
 
         elif data.startswith("export_alert_"):
@@ -523,13 +553,13 @@ class TelegramHandlers:
                 await query.edit_message_text(
                     f"🗑 Все алерты для <b>{symbol}</b> удалены",
                     parse_mode="HTML",
-                    reply_markup=keyboards.main_menu_keyboard(),
+                    reply_markup=self._main_menu_kb(),
                 )
             else:
                 await query.edit_message_text(
                     f"⚠️ Алертов для <b>{symbol}</b> не найдено",
                     parse_mode="HTML",
-                    reply_markup=keyboards.main_menu_keyboard(),
+                    reply_markup=self._main_menu_kb(),
                 )
 
         elif data.startswith("del|"):
@@ -561,6 +591,59 @@ class TelegramHandlers:
                 f"➕ <b>Алерт на {symbol}</b>\n\nВведите цену:",
                 parse_mode="HTML",
                 reply_markup=keyboards.cancel_keyboard(),
+            )
+
+        # ========== Настройки ==========
+        elif data == "settings_menu":
+            s = get_settings()
+            await query.edit_message_text(
+                f"⚙️ <b>Настройки</b>\n\n"
+                f"Порог алертов: <b>{s.describe()}</b>\n\n"
+                f"Алерты с score ниже порога не отправляются.",
+                parse_mode="HTML",
+                reply_markup=keyboards.settings_menu_keyboard(s.describe()),
+            )
+
+        elif data == "settings_threshold":
+            s = get_settings()
+            await query.edit_message_text(
+                f"⚙️ <b>Порог алертов</b>\n\n"
+                f"Текущий: <b>{s.describe()}</b>\n\n"
+                f"Выберите пресет или введите своё значение.",
+                parse_mode="HTML",
+                reply_markup=keyboards.threshold_presets_keyboard(
+                    Config.ALERT_SCORE_PRESETS, s.alert_min_score,
+                ),
+            )
+
+        elif data.startswith("set_score|"):
+            raw = data.split("|", 1)[1]
+            from src.core.settings import RuntimeSettings as _RS
+            new_score = _RS._parse_score(raw, default=None)  # type: ignore[arg-type]
+            if new_score is None:
+                await query.answer("Ошибка парсинга порога", show_alert=True)
+                return
+            s = get_settings()
+            s.alert_min_score = new_score
+            s.save()
+            logger.info(f"⚙️ Порог алертов изменён: {s.describe()}")
+            await query.edit_message_text(
+                f"✅ Порог установлен: <b>{s.describe()}</b>",
+                parse_mode="HTML",
+                reply_markup=keyboards.settings_menu_keyboard(s.describe()),
+            )
+
+        elif data == "set_score_custom":
+            self.user_state[chat_id] = {"step": "waiting_custom_score"}
+            await query.edit_message_text(
+                "✏️ <b>Свой порог</b>\n\n"
+                "Введите число (например, <code>-2.5</code> или <code>1</code>).\n\n"
+                "Что это значит:\n"
+                "• Чем больше — тем строже фильтр.\n"
+                "• Отрицательные значения — слать почти всё.\n"
+                "• Введите <code>all</code>, чтобы слать всё (без порога).",
+                parse_mode="HTML",
+                reply_markup=keyboards.settings_custom_score_keyboard(),
             )
 
         # ========== Необработанный callback ==========
@@ -600,7 +683,7 @@ class TelegramHandlers:
             await query.message.reply_text(
                 f"🗑 Удалён алерт <b>{symbol}</b> @ {price}",
                 parse_mode="HTML",
-                reply_markup=keyboards.main_menu_keyboard(),
+                reply_markup=self._main_menu_kb(),
             )
         else:
             await query.answer("Алерт не найден", show_alert=True)
@@ -687,7 +770,7 @@ class TelegramHandlers:
         assets = self.alerts_manager.get_all_alerts()
         if not assets:
             await query.edit_message_text(
-                "📋 Пусто.", reply_markup=keyboards.main_menu_keyboard()
+                "📋 Пусто.", reply_markup=self._main_menu_kb()
             )
             return
 
@@ -717,7 +800,7 @@ class TelegramHandlers:
             await query.edit_message_text(
                 text,
                 parse_mode="HTML",
-                reply_markup=keyboards.main_menu_keyboard(),
+                reply_markup=self._main_menu_kb(),
             )
         except Exception as e:
             if "Message is not modified" not in str(e):
@@ -729,7 +812,7 @@ class TelegramHandlers:
 
         if not assets:
             text = "📋 <b>Пусто</b>"
-            keyboard = keyboards.main_menu_keyboard()
+            keyboard = self._main_menu_kb()
         else:
             dir_text = {"up": "🟢", "down": "🔴", "any": "⚪️"}
             total = sum(len(a.alerts) for a in assets)
@@ -775,15 +858,18 @@ class TelegramHandlers:
             "<b>Массовое добавление:</b> отправьте несколько строк:\n"
             "<code>BTC 85000 up пробой\n"
             "ETH 3200 down ретест</code>"
+            "\n\n<b>Настройки:</b>\n"
+            "⚙️ Кнопка в меню или команда <code>/settings</code> — "
+            "изменить порог score для отправки алертов."
         )
         try:
             if update.callback_query:
                 await update.callback_query.edit_message_text(
-                    text, parse_mode="HTML", reply_markup=keyboards.main_menu_keyboard()
+                    text, parse_mode="HTML", reply_markup=self._main_menu_kb()
                 )
             else:
                 await update.message.reply_text(
-                    text, parse_mode="HTML", reply_markup=keyboards.main_menu_keyboard()
+                    text, parse_mode="HTML", reply_markup=self._main_menu_kb()
                 )
         except Exception as e:
             if "Message is not modified" not in str(e):
@@ -821,7 +907,7 @@ class TelegramHandlers:
             await query.edit_message_text(
                 "❌ <b>Ничего не найдено</b>\n\nПопробуйте позже или уменьшите фильтры.",
                 parse_mode="HTML",
-                reply_markup=keyboards.main_menu_keyboard(),
+                reply_markup=self._main_menu_kb(),
             )
             return
 

@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 from src.core.alerts import AlertsManager
 from src.core.monitor import AlertEvent, Monitor
+from src.core.settings import init_settings
 from src.telegram.bot import TelegramBot
 from src.utils.config import Config
 from src.utils.data_exporter import DataExporter
@@ -94,6 +95,13 @@ def main():
     total_alerts = sum(len(asset.alerts) for asset in alerts_manager.get_all_alerts())
     logger.info(f"📋 Загружено алертов: {total_alerts}")
 
+    # 2.1. Инициализация runtime-настроек (порог score)
+    runtime_settings = init_settings(Config.SETTINGS_FILE)
+    logger.info(
+        f"⚙️ Runtime-настройки: порог score = "
+        f"{runtime_settings.describe()}"
+    )
+
     # 3. Инициализация Telegram бота
     global telegram_bot
     telegram_bot = TelegramBot(
@@ -121,6 +129,7 @@ def main():
         candle_volume_multiplier=Config.CANDLE_VOLUME_MULTIPLIER,
         alert_cooldown_minutes=Config.ALERT_COOLDOWN_MINUTES,
         use_websocket=Config.USE_WEBSOCKET,   # <-- добавить
+        settings=runtime_settings,
     )
     logger.info("✅ Монитор инициализирован")
 
@@ -132,7 +141,7 @@ def main():
     time.sleep(1)
     
     # Отправляем приветственное сообщение в Telegram С КНОПКАМИ
-    from src.telegram.keyboards import main_menu_keyboard
+    from src.telegram.keyboards import main_menu_keyboard_with_settings
     
     welcome_msg = (
         "✅ <b>Bybit Monitor Bot запущен!</b>\n\n"
@@ -143,7 +152,10 @@ def main():
         "Используйте меню для управления:"
     )
     
-    telegram_bot.send_alert(welcome_msg, reply_markup=main_menu_keyboard())
+    telegram_bot.send_alert(
+        welcome_msg,
+        reply_markup=main_menu_keyboard_with_settings(runtime_settings.describe()),
+    )
 
     # 6. Основной цикл (БЛОКИРУЮЩИЙ) — Monitor в основном потоке
     try:

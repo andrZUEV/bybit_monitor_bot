@@ -38,6 +38,7 @@ from src.api.bybit_client import BybitClient, TickerData
 from src.core.alerts import AlertsManager, Asset
 from src.core.cooldown import CooldownManager
 from src.core.risk import RiskConfig, risk_config_from_env
+from src.core.settings import RuntimeSettings
 from src.utils.config import Config
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -110,9 +111,11 @@ class Monitor:
         # WS:
         ws_client: Any | None = None,   # BybitWebSocketClient (ленивый импорт)
         use_websocket: bool = True,
+        settings: RuntimeSettings | None = None,
     ):
         self.alerts_manager = alerts_manager
         self.on_alert = on_alert_callback
+        self.settings = settings or RuntimeSettings()
         self.poll_interval = poll_interval
         self.volume_threshold = volume_threshold  # legacy, не используется
         self.volume_cooldown = volume_cooldown    # legacy, не используется
@@ -267,6 +270,19 @@ class Monitor:
 
                     hard_filter = evaluation.get("hard_filter")
                     if evaluation["verdict"] != "❌ None" or hard_filter:
+                    # Гейт по score: не шлём, если score ниже порога.
+                    # Пропускаем hard_filter-алерты отдельно — у них свой флаг
+                    # SEND_INVALID_ALERTS (5.1.3), сейчас пропускаем всегда,
+                    # если verdict не None.
+                        score_val = evaluation["score"]
+                        if score_val < self.settings.alert_min_score and not hard_filter:
+                            logger.info(
+                                f"⏭️ Алерт ПРОПУЩЕН (score {score_val} < "
+                                f"порога {self.settings.alert_min_score}): "
+                                f"{asset.symbol} @ {target}"
+                            )
+                            state.triggered_alerts[alert_key] = True
+                            continue
                         message = format_alert_message(
                             symbol=asset.symbol,
                             level=target,

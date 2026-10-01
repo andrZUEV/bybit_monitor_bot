@@ -226,3 +226,25 @@ def test_html_escape_in_signals():
     )
     assert "Volume &gt; 3x" in msg
     assert "wick &lt; level" in msg
+
+    # tests/core/test_format_alert_message.py
+class TestFormatDivergenceSection:
+    def test_divergence_section_rendered(self, base_evaluation):
+        base_evaluation["divergence"] = [
+            {"kind": "bullish", "rsi_gap": 7.5, "price_gap_pct": 1.2, "age_bars": 4},
+            {"kind": "bearish", "rsi_gap": 6.0, "price_gap_pct": 0.9, "age_bars": 12},
+        ]
+        msg = format_alert_message(
+            symbol="ETHUSDT", level=3000.0, direction="any",
+            current_price=3000.0, evaluation=base_evaluation,
+        )
+        assert "🧭 <b>Дивергенции:</b>" in msg
+        assert "бычья" in msg and "медвежья" in msg
+
+    def test_no_divergence_section_when_empty(self, base_evaluation):
+        base_evaluation["divergence"] = []
+        msg = format_alert_message(
+            symbol="ETHUSDT", level=3000.0, direction="any",
+            current_price=3000.0, evaluation=base_evaluation,
+        )
+        assert "🧭 <b>Дивергенции:</b>" not in msg

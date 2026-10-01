@@ -70,7 +70,7 @@ class TelegramBot:
         app.add_handler(CommandHandler("menu", self.handlers.menu_cmd))
         app.add_handler(CommandHandler("list", self.handlers.list_cmd))
         app.add_handler(CommandHandler("help", self.handlers.help_cmd))
-        app.add_handler(CommandHandler("data", self.handlers.data_cmd))
+        app.add_handler(CommandHandler("settings", self.handlers.settings_cmd))
 
         # Callback'и inline-кнопок
         app.add_handler(CallbackQueryHandler(self.handlers.handle_callback))

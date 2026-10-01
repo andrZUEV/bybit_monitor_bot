@@ -409,7 +409,7 @@ def evaluate_alert(
         "structure": None,
         "levels_4h": [],
         "levels_1d": [],
-        "divergence": None,
+        "divergence": [],
         "risk": None,
         "hard_filter": None,
         "hard_filter_ru": None,
@@ -426,7 +426,9 @@ def evaluate_alert(
     filters: list[str] = []
 
     # 1. Паттерн
-    pattern = detect_pattern(last_closed, prev_closed, direction)
+    pattern = None
+    if direction in ("up", "down"):
+        pattern = detect_pattern(last_closed, prev_closed, direction)
     pattern_names = {
         "bullish_pinbar": "Пин-бар (молот)",
         "bearish_pinbar": "Пин-бар (звезда)",
@@ -453,59 +455,96 @@ def evaluate_alert(
         signals.append(f"Объём: {vol_ratio:.1f}x (нейтрально)")
 
     # 3. Тень
-    if has_wick_beyond_level(last_closed, level, direction):
+    # Блок 3 — тень
+    if direction == "any":
+        wick_ok = (
+            last_closed["low"] < level or last_closed["high"] > level
+        )
+    else:
+        wick_ok = has_wick_beyond_level(last_closed, level, direction)
+    if wick_ok:
         score += WEIGHTS["wick"]
         signals.append(f"Тень за уровнем: да +{WEIGHTS['wick']}")
     else:
         signals.append("Тень за уровнем: нет")
 
-    # 4. Закрытие в трети
-    if close_in_correct_third(last_closed, direction):
+    # Блок 4 — закрытие в трети
+    if direction == "any":
+        signals.append("Закрытие в трети: — (any)")
+    elif close_in_correct_third(last_closed, direction):
         score += WEIGHTS["close_third"]
         signals.append(f"Закрытие: правильная треть +{WEIGHTS['close_third']}")
     else:
         signals.append("Закрытие: не в нужной трети")
 
-    # 5. RSI
-    closes_15m = [c["close"] for c in candles_15m]
+    # Блок 5 - RSI
+    closes_15m = [c["close"] for c in candles_15m]   # ← ВСТАВИТЬ ЭТУ СТРОКУ
     rsi = calculate_rsi(closes_15m, period=RSI_PERIOD)
     if rsi is not None:
-        rsi_ok = (direction == "up" and rsi < 40) or (direction == "down" and rsi > 60)
-        rsi_against = (direction == "up" and rsi > 60) or (direction == "down" and rsi < 40)
-        if rsi_ok:
-            score += WEIGHTS["rsi"]
-            signals.append(f"RSI: {rsi:.1f} (в зоне) +{WEIGHTS['rsi']}")
-        elif rsi_against:
-            score += PENALTIES["rsi_against"]
-            signals.append(f"RSI: {rsi:.1f} (против) {PENALTIES['rsi_against']}")
+        if direction == "any":
+            signals.append(f"RSI: {rsi:.1f} (any — нейтрально)")
         else:
-            signals.append(f"RSI: {rsi:.1f} (нейтрально)")
+            rsi_ok = (direction == "up" and rsi < 40) or (direction == "down" and rsi > 60)
+            rsi_against = (direction == "up" and rsi > 60) or (direction == "down" and rsi < 40)
+            if rsi_ok:
+                score += WEIGHTS["rsi"]
+                signals.append(f"RSI: {rsi:.1f} (в зоне) +{WEIGHTS['rsi']}")
+            elif rsi_against:
+                score += PENALTIES["rsi_against"]
+                signals.append(f"RSI: {rsi:.1f} (против) {PENALTIES['rsi_against']}")
+            else:
+                signals.append(f"RSI: {rsi:.1f} (нейтрально)")
     else:
         signals.append("RSI: нет данных")
 
-    # 6. Дивергенция RSI (новое в 4.x)
-    divergence_info: dict | None = None
+    divergence_info: list[dict] = []
     if rsi is not None:
         rsi_series = calculate_rsi_series(closes_15m, period=RSI_PERIOD)
+
+        # Дивергенция ищется ВСЕГДА, независимо от направления алерта.
+        # 'any' → обе (bullish + bearish), 'up'/'down' → только своя.
+        div_direction = "any" if direction == "any" else direction
         divs = find_divergences(
-            closes_15m, rsi_series, direction,
+            closes_15m, rsi_series, div_direction,
             min_rsi_gap=THRESHOLDS["divergence_min_rsi_gap"],
             min_price_gap_pct=THRESHOLDS["divergence_min_price_gap_pct"],
             max_lookback=THRESHOLDS["divergence_max_lookback"],
         )
+
         if divs:
-            d = divs[0]
-            divergence_info = {
-                "kind": d.kind,
-                "rsi_gap": round(d.rsi_gap, 1),
-                "price_gap_pct": round(d.price_gap_pct * 100, 2),
-                "age_bars": d.age_bars,
-            }
-            score += 1.5
-            signals.append(
-                f"RSI-дивергенция ({d.kind}), gap {d.rsi_gap:.0f}, "
-                f"{d.age_bars} бар. +1.5"
-            )
+            for d in divs:
+                divergence_info.append({
+                    "kind": d.kind,
+                    "rsi_gap": round(d.rsi_gap, 1),
+                    "price_gap_pct": round(d.price_gap_pct * 100, 2),
+                    "age_bars": d.age_bars,
+                })
+
+            # +1.5 — только если есть дивергенция «в сторону» алерта
+            # (для 'any' — не даём, это индикатор, см. решение)
+            own_kind = {"up": "bullish", "down": "bearish"}.get(direction)
+            if own_kind and any(d["kind"] == own_kind for d in divergence_info):
+                score += 1.5
+                d = next(d for d in divergence_info if d["kind"] == own_kind)
+                signals.append(
+                    f"RSI-дивергенция ({own_kind}), gap {d['rsi_gap']:.0f}, "
+                    f"{d['age_bars']} бар. +1.5"
+                )
+                # Если при этом нашлась и вторая (для 'up' — bearish, и наоборот) —
+                # покажем её отдельно как индикатор
+                for d in divergence_info:
+                    if d["kind"] != own_kind:
+                        signals.append(
+                            f"RSI-дивергенция ({d['kind']}, индикатор), "
+                            f"gap {d['rsi_gap']:.0f}, {d['age_bars']} бар."
+                        )
+            else:
+                # direction == "any" ИЛИ (up/down, но нашлась только «чужая»)
+                for d in divergence_info:
+                    signals.append(
+                        f"RSI-дивергенция ({d['kind']}, индикатор), "
+                        f"gap {d['rsi_gap']:.0f}, {d['age_bars']} бар."
+                    )
         else:
             signals.append("RSI-дивергенция: нет")
 
@@ -563,15 +602,18 @@ def evaluate_alert(
 
     # Реакция score на тренд против
     if structure and structure.direction != "side":
-        against = (
-            (direction == "up" and structure.direction == "down")
-            or (direction == "down" and structure.direction == "up")
-        )
-        if against:
-            score += PENALTIES["htf_against"]
-            filters.append(f"4H против направления {PENALTIES['htf_against']}")
+        if direction == "any":
+            filters.append(f"4H структура: {structure.direction} (any)")
         else:
-            filters.append(f"4H структура: {structure.direction} (согласовано)")
+            against = (
+                (direction == "up" and structure.direction == "down")
+                or (direction == "down" and structure.direction == "up")
+            )
+            if against:
+                score += PENALTIES["htf_against"]
+                filters.append(f"4H против направления {PENALTIES['htf_against']}")
+            else:
+                filters.append(f"4H структура: {structure.direction} (согласовано)")
     else:
         filters.append(f"4H структура: side (legacy EMA: {htf_trend_legacy})")
 
@@ -589,64 +631,67 @@ def evaluate_alert(
     hard_filter_ru: str | None = None
 
     if risk_cfg is not None:
-        atr_15m = _calc_atr_15m(candles_15m)
-        atr_1h = _calc_atr_1h(candles_1h)
-
-        # ATR для runway — 1h, если есть, иначе 15m
-        atr_for_runway = atr_1h if atr_1h is not None else atr_15m
-        # ATR для стопа — 15m
-        atr_for_stop = atr_15m
-
-        if atr_for_stop and atr_for_stop > 0:
-            risk_dir = "long" if direction == "up" else "short"
-            structure_stop = _structure_stop_15m(
-                candles_15m, direction,
-                lookback=THRESHOLDS["st_stop_lookback"],
-            )
-            entry = current_price
-
-            # risk в единицах цены: |entry - structure_stop| или ATR-фолбэк
-            if structure_stop is not None:
-                risk_per_unit = abs(entry - structure_stop)
-            else:
-                risk_per_unit = atr_for_stop * risk_cfg.atr_multiplier
-            if risk_per_unit <= 0:
-                risk_per_unit = atr_for_stop * risk_cfg.atr_multiplier
-
-            tp1, tp2 = _find_tp_levels(
-                entry, direction, levels_4h,
-                atr_for_runway, risk_cfg.min_rr, risk_per_unit,
-            )
-
-            # если runway считаем по atr_1h, риск для стопа по 15m,
-            # передаём в validate_setup средний ATR (для runway-проверки)
-            atr_for_validate = atr_for_runway or atr_for_stop
-            risk_result = build_setup(
-                entry=entry,
-                structure_stop=structure_stop,
-                atr=atr_for_validate,
-                direction=risk_dir,
-                tp1=tp1,
-                tp2=tp2,
-                cfg=risk_cfg,
-                trend_4h=trend_4h_dir,
-            )
-
-            if not risk_result.valid:
-                hard_filter = risk_result.reason or "unknown"
-                hard_filter_ru = format_reason_ru(hard_filter)
-                score += PENALTIES["hard_filter"]
-                filters.append(
-                    f"⛔ Hard filter: {hard_filter_ru} "
-                    f"({PENALTIES['hard_filter']})"
-                )
-            else:
-                filters.append(
-                    f"Risk OK: RR={risk_result.rr:.2f} "
-                    f"size={risk_result.size:.4f}"
-                )
+        if direction == "any":
+            filters.append("Risk не считается для direction='any'")
         else:
-            filters.append("ATR(15m) недоступен → risk не посчитан")
+            atr_15m = _calc_atr_15m(candles_15m)
+            atr_1h = _calc_atr_1h(candles_1h)
+
+            # ATR для runway — 1h, если есть, иначе 15m
+            atr_for_runway = atr_1h if atr_1h is not None else atr_15m
+            # ATR для стопа — 15m
+            atr_for_stop = atr_15m
+
+            if atr_for_stop and atr_for_stop > 0:
+                risk_dir = "long" if direction == "up" else "short"
+                structure_stop = _structure_stop_15m(
+                    candles_15m, direction,
+                    lookback=THRESHOLDS["st_stop_lookback"],
+                )
+                entry = current_price
+
+                # risk в единицах цены: |entry - structure_stop| или ATR-фолбэк
+                if structure_stop is not None:
+                    risk_per_unit = abs(entry - structure_stop)
+                else:
+                    risk_per_unit = atr_for_stop * risk_cfg.atr_multiplier
+                if risk_per_unit <= 0:
+                    risk_per_unit = atr_for_stop * risk_cfg.atr_multiplier
+
+                tp1, tp2 = _find_tp_levels(
+                    entry, direction, levels_4h,
+                    atr_for_runway, risk_cfg.min_rr, risk_per_unit,
+                )
+
+                # если runway считаем по atr_1h, риск для стопа по 15m,
+                # передаём в validate_setup средний ATR (для runway-проверки)
+                atr_for_validate = atr_for_runway or atr_for_stop
+                risk_result = build_setup(
+                    entry=entry,
+                    structure_stop=structure_stop,
+                    atr=atr_for_validate,
+                    direction=risk_dir,
+                    tp1=tp1,
+                    tp2=tp2,
+                    cfg=risk_cfg,
+                    trend_4h=trend_4h_dir,
+                )
+
+                if not risk_result.valid:
+                    hard_filter = risk_result.reason or "unknown"
+                    hard_filter_ru = format_reason_ru(hard_filter)
+                    score += PENALTIES["hard_filter"]
+                    filters.append(
+                        f"⛔ Hard filter: {hard_filter_ru} "
+                        f"({PENALTIES['hard_filter']})"
+                    )
+                else:
+                    filters.append(
+                        f"Risk OK: RR={risk_result.rr:.2f} "
+                        f"size={risk_result.size:.4f}"
+                    )
+            else:
+                filters.append("ATR(15m) недоступен → risk не посчитан")
 
     # 12. Вердикт
     if score >= THRESHOLDS["strong_min"]:
@@ -700,7 +745,11 @@ def format_alert_message(
     Все динамические строки (hard_filter_ru, signals, filters, setup_note)
     проходят через _html_escape — иначе `<` в тексте ломает Telegram.
     """
-    cross_text = "🟢 СНИЗУ ВВЕРХ" if direction == "up" else "🔴 СВЕРХУ ВНИЗ"
+    cross_text = {
+        "up":   "🟢 СНИЗУ ВВЕРХ",
+        "down": "🔴 СВЕРХУ ВНИЗ",
+        "any":  "⚪️ ПЕРЕСЕЧЕНИЕ",
+    }.get(direction, "⚪️ ПЕРЕСЕЧЕНИЕ")
     lines: list[str] = []
 
     # 0. Hard filter — плашка сверху
@@ -771,6 +820,18 @@ def format_alert_message(
     lines.append("📊 <b>Подтверждения:</b>")
     for signal in evaluation.get("signals", []):
         lines.append(f"• {_html_escape(signal)}")
+
+    # 5.5. Дивергенции (отдельная секция)
+    divs = evaluation.get("divergence") or []
+    if divs:
+        lines.append("")
+        lines.append("🧭 <b>Дивергенции:</b>")
+        for d in divs:
+            kind_ru = "бычья" if d["kind"] == "bullish" else "медвежья"
+            lines.append(
+                f"  • {kind_ru} — gap RSI {d['rsi_gap']:.0f}, "
+                f"цена {d['price_gap_pct']:.2f}%, {d['age_bars']} бар."
+            )
 
     # 6. Фильтры
     lines.append("")

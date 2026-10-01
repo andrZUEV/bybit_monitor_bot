@@ -235,3 +235,18 @@ def test_has_divergence_false():
         closes, rsi, "up",
         max_lookback=len(closes), pivots_left=1, pivots_right=1,
     ) is False
+
+
+class TestDirectionParameter:
+    def test_invalid_direction_raises(self):
+        with pytest.raises(ValueError, match="'up'\\|'down'\\|'any'"):
+            find_divergences([1, 2, 3], [50, 50, 50], "sideways")
+
+    def test_any_accepted_on_empty(self):
+        assert find_divergences([], [], "any") == []
+        assert find_divergences([1, 2, 3], [50, 50, 50], "any") == []
+
+    def test_up_down_still_work(self):
+        # не должно ломаться
+        find_divergences([], [], "up")
+        find_divergences([], [], "down")

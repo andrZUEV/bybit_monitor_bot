@@ -24,11 +24,12 @@ from typing import Literal
 
 DivergenceKind = Literal["bullish", "bearish"]
 
-# analyzer.py использует 'up'/'down'. Чтобы не тащить сюда risk.py,
+# analyzer.py использует 'up'/'down'/'any'. Чтобы не тащить сюда risk.py,
 # держим локальный маппинг.
-_ANALYZER_TO_KIND: dict[str, DivergenceKind] = {
-    "up": "bullish",
-    "down": "bearish",
+_ANALYZER_TO_KINDS: dict[str, tuple[DivergenceKind, ...]] = {
+    "up":   ("bullish",),
+    "down": ("bearish",),
+    "any":  ("bullish", "bearish"),
 }
 
 
@@ -120,6 +121,52 @@ def find_pivots(
 
 # ==================== ПОИСК ДИВЕРГЕНЦИЙ ====================
 
+def _find_one(
+    closes: list[float],
+    pivots: list[Pivot],
+    kind: DivergenceKind,
+    *,
+    min_rsi_gap: float,
+    min_price_gap_pct: float,
+    max_lookback: int,
+) -> Divergence | None:
+    """Самая свежая дивергенция заданного типа, либо None."""
+    expected_pivot_kind: Literal["high", "low"] = (
+        "low" if kind == "bullish" else "high"
+    )
+    window = [p for p in pivots if p.index < max_lookback]
+    if len(window) < 2:
+        return None
+
+    for b in window:
+        if b.kind != expected_pivot_kind:
+            continue
+        for a in window:
+            if a.index <= b.index or a.kind != expected_pivot_kind:
+                continue
+
+            rsi_gap = abs(b.rsi - a.rsi)
+            if rsi_gap < min_rsi_gap:
+                continue
+
+            price_gap_pct = abs(b.price - a.price) / a.price if a.price else 0.0
+            if price_gap_pct < min_price_gap_pct:
+                continue
+
+            if kind == "bullish":
+                ok = b.price < a.price and b.rsi > a.rsi
+            else:
+                ok = b.price > a.price and b.rsi < a.rsi
+            if not ok:
+                continue
+
+            return Divergence(
+                kind=kind, pivot_a=a, pivot_b=b,
+                rsi_gap=rsi_gap, price_gap_pct=price_gap_pct,
+            )
+    return None
+
+
 def find_divergences(
     closes: list[float],
     rsi_series: list[float | None],
@@ -132,24 +179,24 @@ def find_divergences(
     pivots_right: int = 2,
 ) -> list[Divergence]:
     """
-    Ищет одну (самую свежую) дивергенцию в окне max_lookback.
+    Ищет дивергенции в окне max_lookback.
 
-    Args:
-        direction: 'up' → бычья, 'down' → медвежья (нотация analyzer.py).
-        min_rsi_gap: минимальное |RSI_b - RSI_a| (стратегия: 5–10).
-        min_price_gap_pct: минимальный относительный сдвиг цены между
-            пивотами (защита от «шума» на плоскости).
-        max_lookback: окно в барах от [0] (Bybit-порядок).
-        pivots_left/right: параметры find_pivots.
+    direction:
+        'up'   → только бычья
+        'down' → только медвежья
+        'any'  → обе, если есть; отсортированы по свежести
+                 (pivot_b.index по возрастанию — свежие первыми)
 
     Returns:
-        [] если ничего не нашли. Иначе список длины 1 (самая свежая).
-        Всегда безопасно: на коротких/битых данных не бросает.
+        [] если ничего; иначе до 2 элементов при 'any'.
+        Никогда не бросает на коротких/битых данных.
     """
-    if direction not in _ANALYZER_TO_KIND:
-        raise ValueError(f"direction must be 'up'|'down', got {direction!r}")
+    if direction not in _ANALYZER_TO_KINDS:
+        raise ValueError(
+            f"direction must be 'up'|'down'|'any', got {direction!r}"
+        )
 
-    kind = _ANALYZER_TO_KIND[direction]
+    kinds = _ANALYZER_TO_KINDS[direction]
     n = len(closes)
 
     if n < max(pivots_left + pivots_right + 1, 3):
@@ -161,56 +208,21 @@ def find_divergences(
     if len(pivots) < 2:
         return []
 
-    # Обрезаем окно. pivots уже в Bybit-порядке (свежие первыми).
-    window = [p for p in pivots if p.index < max_lookback]
-    if len(window) < 2:
-        return []
+    found: list[Divergence] = []
+    for kind in kinds:
+        d = _find_one(
+            closes, pivots, kind,
+            min_rsi_gap=min_rsi_gap,
+            min_price_gap_pct=min_price_gap_pct,
+            max_lookback=max_lookback,
+        )
+        if d is not None:
+            found.append(d)
 
-    expected_pivot_kind: Literal["high", "low"] = (
-        "low" if kind == "bullish" else "high"
-    )
+    found.sort(key=lambda d: d.pivot_b.index)
+    return found
 
-    # pivot_b — самый свежий подходящий, затем ищем старшего pivot_a.
-    for b in window:
-        if b.kind != expected_pivot_kind:
-            continue
 
-        for a in window:
-            if a.index <= b.index:
-                continue  # a должен быть старше
-            if a.kind != expected_pivot_kind:
-                continue
-
-            rsi_gap = abs(b.rsi - a.rsi)
-            if rsi_gap < min_rsi_gap:
-                continue
-
-            price_gap_pct = (
-                abs(b.price - a.price) / a.price if a.price else 0.0
-            )
-            if price_gap_pct < min_price_gap_pct:
-                continue
-
-            # Семантика дивергенции:
-            #   bullish: цена LL (b.price < a.price), RSI HL (b.rsi > a.rsi)
-            #   bearish: цена HH (b.price > a.price), RSI LH (b.rsi < a.rsi)
-            if kind == "bullish":
-                ok = b.price < a.price and b.rsi > a.rsi
-            else:
-                ok = b.price > a.price and b.rsi < a.rsi
-
-            if not ok:
-                continue
-
-            return [Divergence(
-                kind=kind,
-                pivot_a=a,
-                pivot_b=b,
-                rsi_gap=rsi_gap,
-                price_gap_pct=price_gap_pct,
-            )]
-
-    return []
 
 
 def has_divergence(
