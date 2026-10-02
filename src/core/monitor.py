@@ -275,7 +275,7 @@ class Monitor:
                     # SEND_INVALID_ALERTS (5.1.3), сейчас пропускаем всегда,
                     # если verdict не None.
                         score_val = evaluation["score"]
-                        if score_val < self.settings.alert_min_score and not hard_filter:
+                        if score_val < self.settings.alert_min_score:
                             logger.info(
                                 f"⏭️ Алерт ПРОПУЩЕН (score {score_val} < "
                                 f"порога {self.settings.alert_min_score}): "
