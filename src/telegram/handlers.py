@@ -24,6 +24,7 @@ from src.core.settings import get_settings
 from src.parsers.mass_add import parse_mass_add
 from src.telegram import keyboards
 from src.utils.config import Config
+from src.utils.formatting import html_escape
 from src.utils.indicators import calculate_rsi_series
 from telegram import InputFile, Update
 
@@ -864,11 +865,7 @@ class TelegramHandlers:
             for asset in assets:
                 text += f"🪙 <b>{asset.symbol}</b>\n"
                 for alert in asset.alerts:
-                    note_escaped = (
-                        alert.setup_note.replace("<", "&lt;").replace(">", "&gt;")
-                        if alert.setup_note
-                        else ""
-                    )
+                    note_escaped = html_escape(alert.setup_note or "")
                     note_display = f" | 📝 <i>{note_escaped}</i>" if note_escaped else ""
                     text += (
                         f"   • {alert.price:,.4f} "

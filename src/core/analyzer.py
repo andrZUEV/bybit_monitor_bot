@@ -1,4 +1,4 @@
-"""
+﻿"""
 Модуль технического анализа с весами, штрафами и фильтрами контекста.
 
 Версия 4.0 (Этап 4):
@@ -29,6 +29,7 @@ from src.core.risk import (
     build_setup,
     format_reason_ru,
 )
+from src.utils.formatting import html_escape
 from src.utils.indicators import (
     calculate_atr,
     calculate_ema_from_bybit,
@@ -37,14 +38,6 @@ from src.utils.indicators import (
 )
 
 logger = logging.getLogger(__name__)
-
-def _html_escape(text: str) -> str:
-    """Экранирует &<> для безопасной вставки в Telegram HTML."""
-    return (
-        text.replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;")
-    )
 
 
 # ==================== КОНФИГУРАЦИЯ ====================
@@ -743,7 +736,7 @@ def format_alert_message(
       - топ-3 уровня 4H.
 
     Все динамические строки (hard_filter_ru, signals, filters, setup_note)
-    проходят через _html_escape — иначе `<` в тексте ломает Telegram.
+    проходят через html_escape — иначе `<` в тексте ломает Telegram.
     """
     cross_text = {
         "up":   "🟢 СНИЗУ ВВЕРХ",
@@ -756,12 +749,12 @@ def format_alert_message(
     hard_filter_ru = evaluation.get("hard_filter_ru")
     if hard_filter_ru:
         lines.append(
-            f"⛔ <b>СДЕЛКА НЕ ПО СТРАТЕГИИ:</b> {_html_escape(hard_filter_ru)}"
+            f"⛔ <b>СДЕЛКА НЕ ПО СТРАТЕГИИ:</b> {html_escape(hard_filter_ru)}"
         )
         lines.append("")
 
     # 1. Шапка
-    lines.append(f"🚨 <b>Price Alert: {_html_escape(symbol)}</b>")
+    lines.append(f"🚨 <b>Price Alert: {html_escape(symbol)}</b>")
     lines.append(f"Уровень: <code>{level:,.2f}</code> | {cross_text}")
     lines.append(f"💰 Цена: <code>{current_price:,.2f}</code>")
 
@@ -819,7 +812,7 @@ def format_alert_message(
     lines.append("")
     lines.append("📊 <b>Подтверждения:</b>")
     for signal in evaluation.get("signals", []):
-        lines.append(f"• {_html_escape(signal)}")
+        lines.append(f"• {html_escape(signal)}")
 
     # 5.5. Дивергенции (отдельная секция)
     divs = evaluation.get("divergence") or []
@@ -837,14 +830,14 @@ def format_alert_message(
     lines.append("")
     lines.append("🔍 <b>Фильтры:</b>")
     for f in evaluation.get("filters", []):
-        lines.append(f"• {_html_escape(f)}")
+        lines.append(f"• {html_escape(f)}")
 
     # 7. Итог
     lines.append("")
     lines.append(f"<b>Итого: {evaluation['score']}  →  {evaluation['verdict']}</b>")
 
     if setup_note:
-        lines.append(f"📝 <b>Сетап:</b> <code>{_html_escape(setup_note)}</code>")
+        lines.append(f"📝 <b>Сетап:</b> <code>{html_escape(setup_note)}</code>")
 
     return "\n".join(lines)
 
