@@ -26,12 +26,25 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_MIN_SCORE: float = float("-inf")
+def _default_send_invalid() -> bool:
+    """
+    Дефолт для send_invalid_alerts при первом запуске.
+
+    Пытается прочитать Config.SEND_INVALID_ALERTS_DEFAULT.
+    При любой проблеме (циклический импорт, отсутствие) — True.
+    """
+    try:
+        from src.utils.config import Config
+        return Config.SEND_INVALID_ALERTS_DEFAULT
+    except Exception:
+        return True
 
 
 @dataclass
 class RuntimeSettings:
     """Настройки, которые можно менять без рестарта бота."""
     alert_min_score: float = DEFAULT_MIN_SCORE
+    send_invalid_alerts: bool = True
 
     # Путь хранилища (не сериализуется в JSON)
     _path: Path | None = None
@@ -57,7 +70,13 @@ class RuntimeSettings:
         min_score_raw = data.get("alert_min_score", DEFAULT_MIN_SCORE)
         min_score = cls._parse_score(min_score_raw, default=DEFAULT_MIN_SCORE)
 
-        s = cls(alert_min_score=min_score)
+        send_invalid_raw = data.get("send_invalid_alerts", True)
+        send_invalid = cls._parse_bool(send_invalid_raw, default=True)
+
+        s = cls(
+            alert_min_score=min_score,
+            send_invalid_alerts=send_invalid,
+        )
         s._path = p
         return s
 
@@ -69,9 +88,26 @@ class RuntimeSettings:
         """
         p = Path(path)
         if not p.exists():
-            s = cls(alert_min_score=DEFAULT_MIN_SCORE)
+            s = cls(
+                alert_min_score=DEFAULT_MIN_SCORE,
+                send_invalid_alerts=_default_send_invalid(),
+            )
             s._path = p
             s.save()
+            return s
+
+        try:
+            return cls.load(p)
+        except Exception as e:
+            logger.warning(
+                f"⚠️ settings.json битый или нечитаемый ({e}), "
+                f"использую дефолты"
+            )
+            s = cls(
+                alert_min_score=DEFAULT_MIN_SCORE,
+                send_invalid_alerts=_default_send_invalid(),
+            )
+            s._path = p
             return s
 
         try:
@@ -96,7 +132,10 @@ class RuntimeSettings:
         path = self._path
         with self._lock:
             path.parent.mkdir(parents=True, exist_ok=True)
-            data = {"alert_min_score": self.alert_min_score}
+            data = {
+                "alert_min_score": self.alert_min_score,
+                "send_invalid_alerts": self.send_invalid_alerts,
+            }
 
             fd, tmp_name = tempfile.mkstemp(
                 prefix=path.name + ".", suffix=".tmp", dir=str(path.parent),
@@ -150,6 +189,29 @@ class RuntimeSettings:
         if self.is_all():
             return "ВСЕ"
         return f"≥ {self.alert_min_score:g}"
+
+    def describe_invalid(self) -> str:
+        """Короткое описание флага hard-filter-алертов."""
+        return "ВКЛ" if self.send_invalid_alerts else "ВЫКЛ"
+
+    @staticmethod
+    def _parse_bool(raw: object, *, default: bool) -> bool:
+        """
+        Принимает bool | int | str ('true', 'false', '1', '0', 'yes', 'no', 'on', 'off').
+        На любой ошибке возвращает default.
+        """
+        if raw is None:
+            return default
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)):
+            return bool(raw)
+        s = str(raw).strip().lower()
+        if s in ("1", "true", "yes", "on", "вкл", "да"):
+            return True
+        if s in ("0", "false", "no", "off", "выкл", "нет"):
+            return False
+        return default
 
 # ==================== СИНГЛТОН ====================
 #

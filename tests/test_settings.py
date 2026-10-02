@@ -50,7 +50,10 @@ class TestSaveLoad:
         s.save()
 
         data = json.loads(p.read_text(encoding="utf-8"))
-        assert data == {"alert_min_score": 1.5}
+        assert data == {
+            "alert_min_score": 1.5,
+            "send_invalid_alerts": True,
+        }
 
     def test_save_without_path_is_noop(self, tmp_path: Path):
         s = RuntimeSettings(alert_min_score=2.0)
@@ -122,3 +125,63 @@ class TestLockIsSet:
     def test_lock_created_in_post_init(self):
         s = RuntimeSettings()
         assert s._lock is not None
+
+class TestSendInvalidAlerts:
+    def test_default_true(self):
+        s = RuntimeSettings()
+        assert s.send_invalid_alerts is True
+        assert s.describe_invalid() == "ВКЛ"
+
+    def test_describe_off(self):
+        s = RuntimeSettings(send_invalid_alerts=False)
+        assert s.describe_invalid() == "ВЫКЛ"
+
+    def test_round_trip_true(self, tmp_path: Path):
+        p = tmp_path / "settings.json"
+        s = RuntimeSettings(alert_min_score=0.0, send_invalid_alerts=True)
+        s._path = p
+        s.save()
+
+        loaded = RuntimeSettings.load(p)
+        assert loaded.send_invalid_alerts is True
+
+    def test_round_trip_false(self, tmp_path: Path):
+        p = tmp_path / "settings.json"
+        s = RuntimeSettings(alert_min_score=0.0, send_invalid_alerts=False)
+        s._path = p
+        s.save()
+
+        loaded = RuntimeSettings.load(p)
+        assert loaded.send_invalid_alerts is False
+
+    def test_load_missing_field_defaults_true(self, tmp_path: Path):
+        """Старый файл без send_invalid_alerts — читается как True."""
+        p = tmp_path / "settings.json"
+        p.write_text(json.dumps({"alert_min_score": -5.0}), encoding="utf-8")
+
+        loaded = RuntimeSettings.load(p)
+        assert loaded.send_invalid_alerts is True
+
+    @pytest.mark.parametrize("raw,expected", [
+        (True, True),
+        (False, False),
+        (1, True),
+        (0, False),
+        ("true", True),
+        ("false", False),
+        ("1", True),
+        ("0", False),
+        ("yes", True),
+        ("no", False),
+        ("on", True),
+        ("off", False),
+        ("вкл", True),
+        ("выкл", False),
+    ])
+    def test_parse_bool(self, raw, expected):
+        assert RuntimeSettings._parse_bool(raw, default=None) is expected
+
+    @pytest.mark.parametrize("bad", [None, "abc", [], "1.5"])
+    def test_parse_bool_bad_returns_default(self, bad):
+        assert RuntimeSettings._parse_bool(bad, default=True) is True
+        assert RuntimeSettings._parse_bool(bad, default=False) is False

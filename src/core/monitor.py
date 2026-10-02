@@ -36,6 +36,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from src.api.bybit_client import BybitClient, TickerData
 from src.core.alerts import AlertsManager, Asset
+from src.core.analyzer import evaluate_alert, format_alert_message
 from src.core.cooldown import CooldownManager
 from src.core.risk import RiskConfig, risk_config_from_env
 from src.core.settings import RuntimeSettings
@@ -247,12 +248,13 @@ class Monitor:
                     asset.symbol, asset.category, "D",
                     KLINES_1D_LIMIT, KLINES_1D_TTL,
                 )
+
                 vol_data = self.client.get_candle_volume_ratio(
                     asset.symbol, asset.category, "15", VOLUME_PERIODS
                 )
                 volume_ratio = vol_data["ratio"] if vol_data else 0.0
 
-                from src.core.analyzer import evaluate_alert, format_alert_message
+
 
                 if klines_15m and klines_4h:
                     evaluation = evaluate_alert(
@@ -270,12 +272,9 @@ class Monitor:
 
                     hard_filter = evaluation.get("hard_filter")
                     if evaluation["verdict"] != "❌ None" or hard_filter:
-                    # Гейт по score: не шлём, если score ниже порога.
-                    # Пропускаем hard_filter-алерты отдельно — у них свой флаг
-                    # SEND_INVALID_ALERTS (5.1.3), сейчас пропускаем всегда,
-                    # если verdict не None.
+                        # Гейт 1: обычные алерты режутся по score.
                         score_val = evaluation["score"]
-                        if score_val < self.settings.alert_min_score:
+                        if not hard_filter and score_val < self.settings.alert_min_score:
                             logger.info(
                                 f"⏭️ Алерт ПРОПУЩЕН (score {score_val} < "
                                 f"порога {self.settings.alert_min_score}): "
@@ -283,6 +282,17 @@ class Monitor:
                             )
                             state.triggered_alerts[alert_key] = True
                             continue
+
+                        # Гейт 2: hard_filter-алерты режутся отдельным флагом.
+                        if hard_filter and not self.settings.send_invalid_alerts:
+                            logger.info(
+                                f"⏭️ Алерт ПРОПУЩЕН (hard_filter={hard_filter}, "
+                                f"send_invalid_alerts=False): "
+                                f"{asset.symbol} @ {target}"
+                            )
+                            state.triggered_alerts[alert_key] = True
+                            continue
+
                         message = format_alert_message(
                             symbol=asset.symbol,
                             level=target,
@@ -329,7 +339,7 @@ class Monitor:
                             + (f", hard_filter={hard_filter}" if hard_filter else "")
                             + ")"
                         )
-                        
+
                     else:
                         logger.info(
                             f"⏭️ Алерт ПРОПУЩЕН (слабый сигнал): "

@@ -122,17 +122,53 @@ def main_menu_keyboard_with_settings(threshold_describe: str) -> InlineKeyboardM
     return InlineKeyboardMarkup(keyboard)
 
 
-def settings_menu_keyboard(threshold_describe: str) -> InlineKeyboardMarkup:
-    """Меню настроек: пока одна опция — порог алертов."""
+def settings_menu_keyboard(
+    threshold_describe: str,
+    invalid_describe: str = "ВКЛ",
+) -> InlineKeyboardMarkup:
+    """
+    Меню настроек.
+
+    threshold_describe — RuntimeSettings.describe() (например 'ВСЕ', '≥ 0').
+    invalid_describe — 'ВКЛ' или 'ВЫКЛ' для send_invalid_alerts.
+    """
     keyboard = [
         [InlineKeyboardButton(
             f"⚙️ Порог алертов: {threshold_describe}",
             callback_data="settings_threshold",
         )],
+        [InlineKeyboardButton(
+            f"⛔ Hard-filter алерты: {invalid_describe}",
+            callback_data="settings_toggle_invalid",
+        )],
         [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
+def toggle_invalid_alerts_keyboard(current_enabled: bool) -> InlineKeyboardMarkup:
+    """
+    Экран подтверждения переключения флага hard-filter-алертов.
+
+    current_enabled — текущее состояние (True/False).
+    """
+    if current_enabled:
+        # Сейчас ВКЛ — предлагаем ВЫКЛЮЧИТЬ
+        action_label = "⛔ Выключить (не слать hard-filter)"
+        next_value = "0"
+    else:
+        # Сейчас ВЫКЛ — предлагаем ВКЛЮЧИТЬ
+        action_label = "✅ Включить (слать hard-filter)"
+        next_value = "1"
+
+    keyboard = [
+        [InlineKeyboardButton(
+            action_label,
+            callback_data=f"set_invalid|{next_value}",
+        )],
+        [InlineKeyboardButton("◀ Назад", callback_data="settings_menu")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
 def threshold_presets_keyboard(
     presets: tuple[float, ...],

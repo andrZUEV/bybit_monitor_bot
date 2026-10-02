@@ -94,9 +94,12 @@ class TelegramHandlers:
         s = get_settings()
         await update.message.reply_text(
             f"⚙️ <b>Настройки</b>\n\n"
-            f"Порог алертов: <b>{s.describe()}</b>",
+            f"Порог алертов: <b>{s.describe()}</b>\n"
+            f"Hard-filter алерты: <b>{s.describe_invalid()}</b>",
             parse_mode="HTML",
-            reply_markup=keyboards.settings_menu_keyboard(s.describe()),
+            reply_markup=keyboards.settings_menu_keyboard(
+                s.describe(), s.describe_invalid(),
+            ),
         )
 
     async def list_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -225,7 +228,9 @@ class TelegramHandlers:
             await update.message.reply_text(
                 f"✅ Порог установлен: <b>{s.describe()}</b>",
                 parse_mode="HTML",
-                reply_markup=keyboards.settings_menu_keyboard(s.describe()),
+                reply_markup=keyboards.settings_menu_keyboard(
+                    s.describe(), s.describe_invalid(),
+                ),
             )
             return        
 
@@ -598,10 +603,12 @@ class TelegramHandlers:
             s = get_settings()
             await query.edit_message_text(
                 f"⚙️ <b>Настройки</b>\n\n"
-                f"Порог алертов: <b>{s.describe()}</b>\n\n"
-                f"Алерты с score ниже порога не отправляются.",
+                f"Порог алертов: <b>{s.describe()}</b>\n"
+                f"Hard-filter алерты: <b>{s.describe_invalid()}</b>",
                 parse_mode="HTML",
-                reply_markup=keyboards.settings_menu_keyboard(s.describe()),
+                reply_markup=keyboards.settings_menu_keyboard(
+                    s.describe(), s.describe_invalid(),
+                ),
             )
 
         elif data == "settings_threshold":
@@ -630,7 +637,9 @@ class TelegramHandlers:
             await query.edit_message_text(
                 f"✅ Порог установлен: <b>{s.describe()}</b>",
                 parse_mode="HTML",
-                reply_markup=keyboards.settings_menu_keyboard(s.describe()),
+                reply_markup=keyboards.settings_menu_keyboard(
+                    s.describe(), s.describe_invalid(),
+                ),
             )
 
         elif data == "set_score_custom":
@@ -644,6 +653,39 @@ class TelegramHandlers:
                 "• Введите <code>all</code>, чтобы слать всё (без порога).",
                 parse_mode="HTML",
                 reply_markup=keyboards.settings_custom_score_keyboard(),
+            )
+        
+        # ========== Настройки: hard-filter алерты ==========
+        elif data == "settings_toggle_invalid":
+            s = get_settings()
+            await query.edit_message_text(
+                f"⛔ <b>Hard-filter алерты</b>\n\n"
+                f"Текущее: <b>{s.describe_invalid()}</b>\n\n"
+                f"Hard-filter — это алерты, помеченные «СДЕЛКА НЕ ПО СТРАТЕГИИ» "
+                f"(например, 4H-тренд против направления входа).\n\n"
+                f"• <b>ВКЛ</b> — такие алерты приходят всегда, независимо от score.\n"
+                f"• <b>ВЫКЛ</b> — такие алерты не отправляются.",
+                parse_mode="HTML",
+                reply_markup=keyboards.toggle_invalid_alerts_keyboard(
+                    s.send_invalid_alerts,
+                ),
+            )
+
+        elif data.startswith("set_invalid|"):
+            raw = data.split("|", 1)[1]
+            new_value = raw == "1"
+            s = get_settings()
+            s.send_invalid_alerts = new_value
+            s.save()
+            logger.info(
+                f"⛔ Hard-filter алерты: {s.describe_invalid()}"
+            )
+            await query.edit_message_text(
+                f"✅ Hard-filter алерты: <b>{s.describe_invalid()}</b>",
+                parse_mode="HTML",
+                reply_markup=keyboards.settings_menu_keyboard(
+                    s.describe(), s.describe_invalid(),
+                ),
             )
 
         # ========== Необработанный callback ==========

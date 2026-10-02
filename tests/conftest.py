@@ -229,10 +229,13 @@ def make_monitor(tmp_data_dir: Path):
             on_alert_callback=on_alert_callback,
             bybit_client=bybit_client,
             use_websocket=use_websocket,
+            
         )
         # Отключаем реальную проверку кросса — тестируем только
         # логику _on_ticker_update.
         m._check_price_cross = MagicMock()
+        m.cooldown_manager = MagicMock()
+        m.cooldown_manager.can_send.return_value = True
         return m
 
     return _make
