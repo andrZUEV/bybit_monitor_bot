@@ -48,9 +48,20 @@ def _make_asset(direction: str = "down", price: float = 100.0) -> Asset:
 
 
 def _make_evaluation(score: float, hard_filter: str | None = None) -> dict:
+    # Воспроизводим логику verdict из evaluate_alert:
+    #   score >= strong_min(5.5) → "💪 Strong"
+    #   score >= weak_min(3.5)   → "⚠️ Weak"
+    #   иначе                    → "❌ None"
+    if score >= 5.5:
+        verdict = "💪 Strong"
+    elif score >= 3.5:
+        verdict = "⚠️ Weak"
+    else:
+        verdict = "❌ None"
+
     return {
         "score": score,
-        "verdict": "⚠️ Weak" if score < 5.5 else "💪 Strong",
+        "verdict": verdict,
         "signals": [],
         "filters": [],
         "vol_ratio": 1.0,
@@ -112,23 +123,13 @@ class TestMonitorWritesHistory:
         assert rec.skip_reason is None
         assert rec.symbol == "BTCUSDT"
 
-    def test_skipped_by_score_recorded(self, history, monkeypatch):
-        settings = RuntimeSettings(alert_min_score=0.0)
-        m, on_alert = _make_monitor_with_history(settings, history)
-        _run_cross(m, monkeypatch, _make_evaluation(score=-4.5))
-
-        on_alert.assert_not_called()
-        assert history.count() == 1
-        rec = history.load_all()[0]
-        assert rec.was_sent is False
-        assert rec.skip_reason == "score_below"
-
     def test_skipped_by_hard_filter_recorded(self, history, monkeypatch):
+        """score выше порога, verdict='Weak', hard_filter есть, флаг ВЫКЛ."""
         settings = RuntimeSettings(alert_min_score=0.0, send_invalid_alerts=False)
         m, on_alert = _make_monitor_with_history(settings, history)
         _run_cross(
             m, monkeypatch,
-            _make_evaluation(score=-1.5, hard_filter="trend_conflict"),
+            _make_evaluation(score=3.5, hard_filter="trend_conflict"),
         )
 
         on_alert.assert_not_called()
@@ -137,12 +138,13 @@ class TestMonitorWritesHistory:
         assert rec.was_sent is False
         assert rec.skip_reason == "hard_filter_disabled"
 
+
     def test_hard_filter_sent_when_flag_true_recorded(self, history, monkeypatch):
         settings = RuntimeSettings(alert_min_score=0.0, send_invalid_alerts=True)
         m, on_alert = _make_monitor_with_history(settings, history)
         _run_cross(
             m, monkeypatch,
-            _make_evaluation(score=-1.5, hard_filter="trend_conflict"),
+            _make_evaluation(score=3.5, hard_filter="trend_conflict"),
         )
 
         on_alert.assert_called_once()
@@ -150,6 +152,7 @@ class TestMonitorWritesHistory:
         rec = history.load_all()[0]
         assert rec.was_sent is True
         assert rec.skip_reason is None
+        assert rec.strategy_pass is True
 
     def test_weak_signal_not_recorded(self, history, monkeypatch):
         """verdict='❌ None' без hard_filter — не пишем вообще (даже в историю)."""
@@ -165,3 +168,85 @@ class TestMonitorWritesHistory:
         assert history.count() == 1
         rec = history.load_all()[0]
         assert rec.was_sent is False
+
+class TestStrategyPass:
+    def test_sent_alert_strategy_pass_true(self, history, monkeypatch):
+        settings = RuntimeSettings(alert_min_score=0.0)
+        m, on_alert = _make_monitor_with_history(settings, history)
+        _run_cross(m, monkeypatch, _make_evaluation(score=3.5))
+
+        on_alert.assert_called_once()
+        rec = history.load_all()[0]
+        assert rec.was_sent is True
+        assert rec.strategy_pass is True
+
+    def test_skipped_by_score_strategy_pass_false(self, history, monkeypatch):
+        """Score выше weak_min(3.5), но ниже alert_min_score(4.0).
+        Проверяем, что skip_reason='score_below'."""
+        settings = RuntimeSettings(alert_min_score=4.0)   # ← порог 4.0
+        m, on_alert = _make_monitor_with_history(settings, history)
+        _run_cross(m, monkeypatch, _make_evaluation(score=3.5))   # ← score 3.5
+        # verdict="⚠️ Weak", meets_verdict=True
+        # meets_score: 3.5 >= 4.0 → False
+        # skip_reason = "score_below"
+
+        on_alert.assert_not_called()
+        rec = history.load_all()[0]
+        assert rec.was_sent is False
+        assert rec.skip_reason == "score_below"
+        assert rec.strategy_pass is False
+
+    def test_skipped_by_verdict_none_strategy_pass_false(self, history, monkeypatch):
+        """score ниже weak_min(3.5) → verdict='❌ None' → skip_reason='verdict_none'."""
+        settings = RuntimeSettings(alert_min_score=0.0)
+        m, on_alert = _make_monitor_with_history(settings, history)
+        _run_cross(m, monkeypatch, _make_evaluation(score=-4.5))
+
+        on_alert.assert_not_called()
+        rec = history.load_all()[0]
+        assert rec.was_sent is False
+        assert rec.skip_reason == "verdict_none"
+        assert rec.strategy_pass is False
+
+    def test_hard_filter_disabled_strategy_pass_false(self, history, monkeypatch):
+        settings = RuntimeSettings(alert_min_score=0.0, send_invalid_alerts=False)
+        m, on_alert = _make_monitor_with_history(settings, history)
+        _run_cross(
+            m, monkeypatch,
+            _make_evaluation(score=3.5, hard_filter="trend_conflict"),
+        )
+
+        on_alert.assert_not_called()
+        rec = history.load_all()[0]
+        assert rec.was_sent is False
+        assert rec.skip_reason == "hard_filter_disabled"
+        assert rec.strategy_pass is False
+
+    def test_hard_filter_enabled_strategy_pass_true(self, history, monkeypatch):
+        settings = RuntimeSettings(alert_min_score=0.0, send_invalid_alerts=True)
+        m, on_alert = _make_monitor_with_history(settings, history)
+        _run_cross(
+            m, monkeypatch,
+            _make_evaluation(score=3.5, hard_filter="trend_conflict"),
+        )
+
+        on_alert.assert_called_once()
+        rec = history.load_all()[0]
+        assert rec.was_sent is True
+        assert rec.strategy_pass is True
+
+    def test_verdict_none_strategy_pass_false(self, history, monkeypatch):
+        """verdict='❌ None' — теперь ТОЖЕ пишется в историю."""
+        settings = RuntimeSettings(alert_min_score=0.0)
+        m, on_alert = _make_monitor_with_history(settings, history)
+
+        ev = _make_evaluation(score=-8.0)
+        ev["verdict"] = "❌ None"   # ← принудительно
+        _run_cross(m, monkeypatch, ev)
+
+        on_alert.assert_not_called()
+        assert history.count() == 1
+        rec = history.load_all()[0]
+        assert rec.was_sent is False
+        assert rec.skip_reason == "verdict_none"
+        assert rec.strategy_pass is False

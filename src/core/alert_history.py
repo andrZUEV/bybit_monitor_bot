@@ -81,6 +81,7 @@ class AlertRecord:
     timeframe_used: str           # "15m"
     atr_value: float | None
     hard_filter: str | None
+    strategy_pass: bool = False   # прошёл ли по всем правилам стратегии
 
     # ---------- Служебное ----------
     recorded_at: float = field(default_factory=time.time)  # когда запись создана
@@ -174,7 +175,7 @@ class AlertHistory:
         base_cols = [
             "timestamp", "symbol", "level", "direction",
             "alert_age_hours", "final_score", "verdict",
-            "was_sent", "skip_reason",
+            "was_sent", "skip_reason","strategy_pass",
             "candle_ts", "volume_ratio", "rsi",
             "body_size", "upper_wick", "lower_wick",
             "body_to_range_ratio", "close_position", "close_pos_ratio",
@@ -199,7 +200,7 @@ class AlertHistory:
                 row = [
                     r.timestamp, r.symbol, r.level, r.direction,
                     r.alert_age_hours, r.final_score, r.verdict,
-                    r.was_sent, r.skip_reason or "",
+                    r.was_sent, r.skip_reason or "", r.strategy_pass,
                     r.candle_ts, r.volume_ratio, r.rsi if r.rsi is not None else "",
                     r.body_size, r.upper_wick, r.lower_wick,
                     r.body_to_range_ratio, r.close_position, r.close_pos_ratio,
@@ -293,6 +294,7 @@ def build_alert_record(
     volume_ratio: float,
     was_sent: bool,
     skip_reason: str | None = None,
+    strategy_pass: bool = False,
 ) -> AlertRecord:
     """
     Собирает AlertRecord из результата evaluate_alert + метаданных.
@@ -309,6 +311,7 @@ def build_alert_record(
         final_score=float(evaluation.get("score", 0.0)),
         verdict=str(evaluation.get("verdict", "❌ None")),
         was_sent=was_sent,
+        strategy_pass=strategy_pass,
         skip_reason=skip_reason,
 
         candle_ts=int(evaluation.get("candle_ts", 0)),

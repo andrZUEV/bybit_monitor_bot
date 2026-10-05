@@ -276,18 +276,31 @@ class Monitor:
 
                     hard_filter = evaluation.get("hard_filter")
                     score_val = evaluation["score"]
-                    should_send = True
+                    verdict = evaluation["verdict"]
+
+                    # «Стратегически идеальный» сетап — как если бы алерт ушёл в Telegram.
+                    # Нужен для оффлайн-анализа: понять, правильно ли фильтры отсортировали.
+                    meets_verdict = verdict != "❌ None"
+                    meets_hard_filter = (hard_filter is None or self.settings.send_invalid_alerts)
+                    meets_score = score_val >= self.settings.alert_min_score
+
+                    strategy_pass = meets_verdict and meets_hard_filter and meets_score
+
+                    # Определяем, отправлять ли в Telegram
+                    should_send = strategy_pass  # пока упрощённо: если стратегия пройдена — шлём
                     skip_reason: str | None = None
-
-                    # Гейты отправки
-                    if not hard_filter and score_val < self.settings.alert_min_score:
-                        should_send = False
+                    if should_send:
+                        skip_reason = None
+                    elif not meets_verdict:
+                        skip_reason = "verdict_none"
+                    elif not meets_score:
                         skip_reason = "score_below"
-                    elif hard_filter and not self.settings.send_invalid_alerts:
-                        should_send = False
+                    elif not meets_hard_filter:
                         skip_reason = "hard_filter_disabled"
+                    else:
+                        skip_reason = "unknown"
 
-                    # Пишем в историю ВСЕГДА (и отправленные, и пропущенные)
+                    # Пишем AlertRecord ВСЕГДА — даже «слабый сигнал».
                     try:
                         record = build_alert_record(
                             evaluation=evaluation,
@@ -299,6 +312,7 @@ class Monitor:
                             volume_ratio=volume_ratio,
                             was_sent=should_send,
                             skip_reason=skip_reason,
+                            strategy_pass=strategy_pass,
                         )
                         self.alert_history.append(record)
                     except Exception as e:
@@ -307,11 +321,13 @@ class Monitor:
                             exc_info=True,
                         )
 
+                    # Пропускаем отправку, если гейты не пропустили.
                     if not should_send:
                         logger.info(
-                            f"⏭️ Алерт ПРОПУЩЕН ({skip_reason}): "
+                            f"⏭️ Алерт НЕ ОТПРАВЛЕН ({skip_reason}): "
                             f"{asset.symbol} @ {target} "
-                            f"(score={score_val}, hard_filter={hard_filter})"
+                            f"(score={score_val}, hard_filter={hard_filter}, "
+                            f"verdict={verdict})"
                         )
                         state.triggered_alerts[alert_key] = True
                         continue
