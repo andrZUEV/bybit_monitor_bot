@@ -12,7 +12,7 @@ import time
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 
-from src.core.alert_history import AlertHistory
+from src.core.alert_history import init_alert_history
 from src.core.alerts import AlertsManager
 from src.core.monitor import AlertEvent, Monitor
 from src.core.settings import init_settings
@@ -104,7 +104,7 @@ def main():
     )
 
     # 2.2. История последних алертов
-    alert_history = AlertHistory(
+    alert_history = init_alert_history(
         path=Config.ALERT_HISTORY_FILE,
         max_records=runtime_settings.alert_history_depth,
     )
