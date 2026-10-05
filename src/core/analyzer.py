@@ -406,6 +406,24 @@ def evaluate_alert(
         "risk": None,
         "hard_filter": None,
         "hard_filter_ru": None,
+        # Расширенные поля для AlertHistory (5.2.2)
+        "candle_ts": 0,
+        "candle": {},
+        "prev_candle": {},
+        "body_size": 0.0,
+        "upper_wick": 0.0,
+        "lower_wick": 0.0,
+        "body_to_range_ratio": 0.0,
+        "close_position": "middle",
+        "close_pos_ratio": 0.5,
+        "pattern_score": 0.0,
+        "pattern_reason": "",
+        "volume_score": 0.0,
+        "rsi_score": 0.0,
+        "wick_beyond_level": False,
+        "close_in_correct_third": False,
+        "htf_against": False,
+        "atr_value": None,
     }
 
     if len(candles_15m) < 3:
@@ -413,6 +431,36 @@ def evaluate_alert(
 
     last_closed = candles_15m[1]
     prev_closed = candles_15m[2]
+    # ---- Сырые данные свечи для AlertHistory (5.2.2) ----
+    _o, _h, _l, _c = (
+        last_closed["open"], last_closed["high"],
+        last_closed["low"], last_closed["close"],
+    )
+    _body_size = abs(_c - _o)
+    _range = _h - _l
+    _upper_wick = _h - max(_o, _c)
+    _lower_wick = min(_o, _c) - _l
+    _body_to_range_ratio = (_body_size / _range) if _range > 0 else 0.0
+    _close_pos_ratio = ((_c - _l) / _range) if _range > 0 else 0.5
+
+    if _close_pos_ratio >= 2 / 3:
+        _close_position = "upper"
+    elif _close_pos_ratio <= 1 / 3:
+        _close_position = "lower"
+    else:
+        _close_position = "middle"
+
+    _candle_ts = int(klines_15m[1][0]) if klines_15m and len(klines_15m) > 1 else 0
+    _candle_dict = {
+        "open": _o, "high": _h, "low": _l, "close": _c,
+        "volume": last_closed["volume"],
+    }
+    _prev_candle_dict = {
+        "open": prev_closed["open"],
+        "high": prev_closed["high"],
+        "low": prev_closed["low"],
+        "close": prev_closed["close"],
+    }
 
     score = 0.0
     signals: list[str] = []
@@ -428,22 +476,37 @@ def evaluate_alert(
         "bullish_engulfing": "Бычье поглощение",
         "bearish_engulfing": "Медвежье поглощение",
     }
+
+    pattern_score = 0.0
     if pattern:
-        score += WEIGHTS["pattern"]
+        pattern_score = WEIGHTS["pattern"]
+        score += pattern_score
         signals.append(
-            f"Паттерн: {pattern_names.get(pattern, pattern)} +{WEIGHTS['pattern']}"
+            f"Паттерн: {pattern_names.get(pattern, pattern)} +{pattern_score}"
+        )
+        pattern_reason = (
+            f"{pattern}: body={_body_size:.4g}, "
+            f"lower_wick={_lower_wick:.4g}, upper_wick={_upper_wick:.4g}, "
+            f"body_to_range={_body_to_range_ratio:.2f}"
         )
     else:
         signals.append("Паттерн: нет")
+        pattern_reason = (
+            f"no pattern: body_to_range_ratio={_body_to_range_ratio:.2f}, "
+            f"lower_wick={_lower_wick:.4g}, upper_wick={_upper_wick:.4g}"
+        )
 
     # 2. Объём
     vol_ratio = calc_volume_ratio(candles_15m, periods=VOLUME_AVG_PERIODS)
+    volume_score = 0.0
     if vol_ratio >= THRESHOLDS["volume_good"]:
-        score += WEIGHTS["volume"]
-        signals.append(f"Объём: {vol_ratio:.1f}x +{WEIGHTS['volume']}")
+        volume_score = WEIGHTS["volume"]
+        score += volume_score
+        signals.append(f"Объём: {vol_ratio:.1f}x +{volume_score}")
     elif vol_ratio < THRESHOLDS["volume_low"]:
-        score += PENALTIES["low_volume"]
-        signals.append(f"Объём: {vol_ratio:.1f}x (штраф) {PENALTIES['low_volume']}")
+        volume_score = PENALTIES["low_volume"]
+        score += volume_score
+        signals.append(f"Объём: {vol_ratio:.1f}x (штраф) {volume_score}")
     else:
         signals.append(f"Объём: {vol_ratio:.1f}x (нейтрально)")
 
@@ -455,6 +518,7 @@ def evaluate_alert(
         )
     else:
         wick_ok = has_wick_beyond_level(last_closed, level, direction)
+    wick_beyond_level = wick_ok  # для AlertRecord
     if wick_ok:
         score += WEIGHTS["wick"]
         signals.append(f"Тень за уровнем: да +{WEIGHTS['wick']}")
@@ -463,16 +527,20 @@ def evaluate_alert(
 
     # Блок 4 — закрытие в трети
     if direction == "any":
+        close_in_correct_third_flag = False
         signals.append("Закрытие в трети: — (any)")
     elif close_in_correct_third(last_closed, direction):
+        close_in_correct_third_flag = True
         score += WEIGHTS["close_third"]
         signals.append(f"Закрытие: правильная треть +{WEIGHTS['close_third']}")
     else:
+        close_in_correct_third_flag = False
         signals.append("Закрытие: не в нужной трети")
 
     # Блок 5 - RSI
     closes_15m = [c["close"] for c in candles_15m]   # ← ВСТАВИТЬ ЭТУ СТРОКУ
     rsi = calculate_rsi(closes_15m, period=RSI_PERIOD)
+    rsi_score = 0.0
     if rsi is not None:
         if direction == "any":
             signals.append(f"RSI: {rsi:.1f} (any — нейтрально)")
@@ -480,11 +548,13 @@ def evaluate_alert(
             rsi_ok = (direction == "up" and rsi < 40) or (direction == "down" and rsi > 60)
             rsi_against = (direction == "up" and rsi > 60) or (direction == "down" and rsi < 40)
             if rsi_ok:
-                score += WEIGHTS["rsi"]
-                signals.append(f"RSI: {rsi:.1f} (в зоне) +{WEIGHTS['rsi']}")
+                rsi_score = WEIGHTS["rsi"]
+                score += rsi_score
+                signals.append(f"RSI: {rsi:.1f} (в зоне) +{rsi_score}")
             elif rsi_against:
-                score += PENALTIES["rsi_against"]
-                signals.append(f"RSI: {rsi:.1f} (против) {PENALTIES['rsi_against']}")
+                rsi_score = PENALTIES["rsi_against"]
+                score += rsi_score
+                signals.append(f"RSI: {rsi:.1f} (против) {rsi_score}")
             else:
                 signals.append(f"RSI: {rsi:.1f} (нейтрально)")
     else:
@@ -577,9 +647,9 @@ def evaluate_alert(
     if levels_1d:
         filters.append(f"Уровней 1D: {len(levels_1d)}")
 
-    # 9. Структура тренда (новое) + legacy htf_trend
+        # 9. Структура тренда (новое) + legacy htf_trend
     structure: TrendStructure | None = None
-    htf_trend_legacy = get_htf_trend(candles_4h)  # эта функция хочет dict — оставляем
+    htf_trend_legacy = get_htf_trend(candles_4h)
 
     if klines_4h:
         structure = find_hh_hl(
@@ -593,7 +663,7 @@ def evaluate_alert(
     elif structure and structure.direction == "down":
         trend_4h_dir = "short"
 
-    # Реакция score на тренд против
+    htf_against_flag = False
     if structure and structure.direction != "side":
         if direction == "any":
             filters.append(f"4H структура: {structure.direction} (any)")
@@ -602,6 +672,7 @@ def evaluate_alert(
                 (direction == "up" and structure.direction == "down")
                 or (direction == "down" and structure.direction == "up")
             )
+            htf_against_flag = against
             if against:
                 score += PENALTIES["htf_against"]
                 filters.append(f"4H против направления {PENALTIES['htf_against']}")
@@ -623,7 +694,9 @@ def evaluate_alert(
     hard_filter: str | None = None
     hard_filter_ru: str | None = None
 
+    atr_for_history: float | None = None  # для AlertRecord
     if risk_cfg is not None:
+        atr_15m = _calc_atr_15m(candles_15m)
         if direction == "any":
             filters.append("Risk не считается для direction='any'")
         else:
@@ -686,6 +759,8 @@ def evaluate_alert(
             else:
                 filters.append("ATR(15m) недоступен → risk не посчитан")
 
+        atr_for_history = atr_15m   # сохраняем для AlertRecord
+
     # 12. Вердикт
     if score >= THRESHOLDS["strong_min"]:
         verdict = "💪 Strong"
@@ -715,6 +790,24 @@ def evaluate_alert(
         "risk": risk_result,
         "hard_filter": hard_filter,
         "hard_filter_ru": hard_filter_ru,
+        # ---- Расширенные поля для AlertHistory (5.2.2) ----
+        "candle_ts": _candle_ts,
+        "candle": _candle_dict,
+        "prev_candle": _prev_candle_dict,
+        "body_size": _body_size,
+        "upper_wick": _upper_wick,
+        "lower_wick": _lower_wick,
+        "body_to_range_ratio": _body_to_range_ratio,
+        "close_position": _close_position,
+        "close_pos_ratio": _close_pos_ratio,
+        "pattern_score": pattern_score,
+        "pattern_reason": pattern_reason,
+        "volume_score": volume_score,
+        "rsi_score": rsi_score,
+        "wick_beyond_level": wick_beyond_level,
+        "close_in_correct_third": close_in_correct_third_flag,
+        "htf_against": htf_against_flag,
+        "atr_value": atr_for_history,
     }
 
 
