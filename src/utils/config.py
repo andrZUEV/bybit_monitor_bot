@@ -78,6 +78,8 @@ class Config:
         3.0,
     )
 
+    HISTORY_DEPTH_PRESETS: tuple[int, ...] = (100, 500, 1000, 5000)
+
     # Слать ли hard-filter-алерты (⛔ СДЕЛКА НЕ ПО СТРАТЕГИИ).
     # True — шлём всё (включая hard_filter), False — только валидные сделки.
     # По умолчанию True — обратная совместимость.
@@ -131,6 +133,7 @@ class Config:
     ALERTS_FILE: Path = DATA_DIR / "alerts.json"
     COOLDOWNS_FILE: Path = DATA_DIR / "cooldowns.json"
     SETTINGS_FILE: Path = DATA_DIR / "settings.json"
+    ALERT_HISTORY_FILE: Path = DATA_DIR / "alert_history.jsonl"
 
     # ==================== Валидация ====================
     @classmethod

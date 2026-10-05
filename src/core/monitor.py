@@ -35,6 +35,7 @@ from typing import Any
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from src.api.bybit_client import BybitClient, TickerData
+from src.core.alert_history import AlertHistory, build_alert_record
 from src.core.alerts import AlertsManager, Asset
 from src.core.analyzer import evaluate_alert, format_alert_message
 from src.core.cooldown import CooldownManager
@@ -113,10 +114,15 @@ class Monitor:
         ws_client: Any | None = None,   # BybitWebSocketClient (ленивый импорт)
         use_websocket: bool = True,
         settings: RuntimeSettings | None = None,
+        alert_history: AlertHistory | None = None,
     ):
         self.alerts_manager = alerts_manager
         self.on_alert = on_alert_callback
         self.settings = settings or RuntimeSettings()
+        self.alert_history = alert_history or AlertHistory(
+            path=Config.ALERT_HISTORY_FILE,
+            max_records=self.settings.alert_history_depth,
+        )
         self.poll_interval = poll_interval
         self.volume_threshold = volume_threshold  # legacy, не используется
         self.volume_cooldown = volume_cooldown    # legacy, не используется
@@ -254,8 +260,6 @@ class Monitor:
                 )
                 volume_ratio = vol_data["ratio"] if vol_data else 0.0
 
-
-
                 if klines_15m and klines_4h:
                     evaluation = evaluate_alert(
                         symbol=asset.symbol,
@@ -271,83 +275,98 @@ class Monitor:
                     )
 
                     hard_filter = evaluation.get("hard_filter")
-                    if evaluation["verdict"] != "❌ None" or hard_filter:
-                        # Гейт 1: обычные алерты режутся по score.
-                        score_val = evaluation["score"]
-                        if not hard_filter and score_val < self.settings.alert_min_score:
-                            logger.info(
-                                f"⏭️ Алерт ПРОПУЩЕН (score {score_val} < "
-                                f"порога {self.settings.alert_min_score}): "
-                                f"{asset.symbol} @ {target}"
-                            )
-                            state.triggered_alerts[alert_key] = True
-                            continue
+                    score_val = evaluation["score"]
+                    should_send = True
+                    skip_reason: str | None = None
 
-                        # Гейт 2: hard_filter-алерты режутся отдельным флагом.
-                        if hard_filter and not self.settings.send_invalid_alerts:
-                            logger.info(
-                                f"⏭️ Алерт ПРОПУЩЕН (hard_filter={hard_filter}, "
-                                f"send_invalid_alerts=False): "
-                                f"{asset.symbol} @ {target}"
-                            )
-                            state.triggered_alerts[alert_key] = True
-                            continue
+                    # Гейты отправки
+                    if not hard_filter and score_val < self.settings.alert_min_score:
+                        should_send = False
+                        skip_reason = "score_below"
+                    elif hard_filter and not self.settings.send_invalid_alerts:
+                        should_send = False
+                        skip_reason = "hard_filter_disabled"
 
-                        message = format_alert_message(
+                    # Пишем в историю ВСЕГДА (и отправленные, и пропущенные)
+                    try:
+                        record = build_alert_record(
+                            evaluation=evaluation,
                             symbol=asset.symbol,
                             level=target,
                             direction=direction,
                             current_price=curr,
-                            evaluation=evaluation,
-                            setup_note=rule.setup_note,
+                            alert_age_hours=evaluation.get("age_hours", 0.0),
+                            volume_ratio=volume_ratio,
+                            was_sent=should_send,
+                            skip_reason=skip_reason,
+                        )
+                        self.alert_history.append(record)
+                    except Exception as e:
+                        logger.error(
+                            f"⚠️ Не удалось записать AlertRecord: {e}",
+                            exc_info=True,
                         )
 
-                        alert_keyboard = InlineKeyboardMarkup([
-                            [InlineKeyboardButton(
-                                f"🗑 Удалить {asset.symbol} @ {target}",
-                                callback_data=f"del|{asset.symbol}|{target}|{direction}",
-                            )],
-                            [InlineKeyboardButton(
-                                f"📊 Выгрузить данные {asset.symbol}",
-                                callback_data=f"export_alert_{asset.symbol}",
-                            )],
-                            [InlineKeyboardButton(
-                                "🏠 Главное меню", callback_data="menu_main"
-                            )],
-                        ])
-
-                        event = AlertEvent(
-                            event_type="price_cross",
-                            symbol=asset.symbol,
-                            category=asset.category,
-                            current_price=curr,
-                            message=message,
-                            extra={
-                                "target": target,
-                                "direction": direction,
-                                "volume_ratio": volume_ratio,
-                                "evaluation": evaluation,
-                            },
-                            reply_markup=alert_keyboard,
-                        )
-
-                        self.on_alert(event)
-                        self.cooldown_manager.mark_sent(asset.symbol, target, direction)
+                    if not should_send:
                         logger.info(
-                            f"🔔 Алерт ОТПРАВЛЕН: {asset.symbol} @ {target} "
-                            f"(Score: {evaluation['score']}"
-                            + (f", hard_filter={hard_filter}" if hard_filter else "")
-                            + ")"
-                        )
-
-                    else:
-                        logger.info(
-                            f"⏭️ Алерт ПРОПУЩЕН (слабый сигнал): "
+                            f"⏭️ Алерт ПРОПУЩЕН ({skip_reason}): "
                             f"{asset.symbol} @ {target} "
-                            f"(Score: {evaluation['score']}, verdict: {evaluation['verdict']})"
+                            f"(score={score_val}, hard_filter={hard_filter})"
                         )
+                        state.triggered_alerts[alert_key] = True
+                        continue
+
+                    # --- Отправка ---
+                    message = format_alert_message(
+                        symbol=asset.symbol,
+                        level=target,
+                        direction=direction,
+                        current_price=curr,
+                        evaluation=evaluation,
+                        setup_note=rule.setup_note,
+                    )
+
+                    alert_keyboard = InlineKeyboardMarkup([
+                        [InlineKeyboardButton(
+                            f"🗑 Удалить {asset.symbol} @ {target}",
+                            callback_data=f"del|{asset.symbol}|{target}|{direction}",
+                        )],
+                        [InlineKeyboardButton(
+                            f"📊 Выгрузить данные {asset.symbol}",
+                            callback_data=f"export_alert_{asset.symbol}",
+                        )],
+                        [InlineKeyboardButton(
+                            "🏠 Главное меню", callback_data="menu_main"
+                        )],
+                    ])
+
+                    event = AlertEvent(
+                        event_type="price_cross",
+                        symbol=asset.symbol,
+                        category=asset.category,
+                        current_price=curr,
+                        message=message,
+                        extra={
+                            "target": target,
+                            "direction": direction,
+                            "volume_ratio": volume_ratio,
+                            "evaluation": evaluation,
+                        },
+                        reply_markup=alert_keyboard,
+                    )
+
+                    self.on_alert(event)
+                    self.cooldown_manager.mark_sent(asset.symbol, target, direction)
+                    logger.info(
+                        f"🔔 Алерт ОТПРАВЛЕН: {asset.symbol} @ {target} "
+                        f"(Score: {evaluation['score']}"
+                        + (f", hard_filter={hard_filter}" if hard_filter else "")
+                        + ")"
+                    )
                 else:
-                    logger.warning(f"⚠️ Не удалось получить данные для анализа: {asset.symbol}")
+                    logger.warning(
+                        f"⚠️ Не удалось получить данные для анализа: {asset.symbol}"
+                    )
 
                 # Ставим флаг, чтобы не дёргать API повторно, пока цена не отойдёт
                 state.triggered_alerts[alert_key] = True

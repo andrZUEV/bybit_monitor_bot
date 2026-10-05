@@ -12,6 +12,7 @@ import time
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 
+from src.core.alert_history import AlertHistory
 from src.core.alerts import AlertsManager
 from src.core.monitor import AlertEvent, Monitor
 from src.core.settings import init_settings
@@ -102,6 +103,16 @@ def main():
         f"{runtime_settings.describe()}"
     )
 
+    # 2.2. История последних алертов
+    alert_history = AlertHistory(
+        path=Config.ALERT_HISTORY_FILE,
+        max_records=runtime_settings.alert_history_depth,
+    )
+    logger.info(
+        f"📜 История алертов: {alert_history.count()} записей, "
+        f"глубина {alert_history.max_records}"
+    )
+
     # 3. Инициализация Telegram бота
     global telegram_bot
     telegram_bot = TelegramBot(
@@ -130,6 +141,7 @@ def main():
         alert_cooldown_minutes=Config.ALERT_COOLDOWN_MINUTES,
         use_websocket=Config.USE_WEBSOCKET,   # <-- добавить
         settings=runtime_settings,
+        alert_history=alert_history,
     )
     logger.info("✅ Монитор инициализирован")
 

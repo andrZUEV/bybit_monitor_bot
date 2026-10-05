@@ -53,6 +53,7 @@ class TestSaveLoad:
         assert data == {
             "alert_min_score": 1.5,
             "send_invalid_alerts": True,
+            "alert_history_depth": 1000,
         }
 
     def test_save_without_path_is_noop(self, tmp_path: Path):
