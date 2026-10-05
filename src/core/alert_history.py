@@ -350,3 +350,53 @@ def build_alert_record(
         ),
         hard_filter=evaluation.get("hard_filter"),
     )
+
+# ==================== СИНГЛТОН ====================
+#
+# Один инстанс на процесс. main.py вызывает init_alert_history() один раз.
+# Monitor и хендлеры дёргают get_alert_history().
+
+_history_instance: AlertHistory | None = None
+_history_init_lock = threading.RLock()
+
+
+def init_alert_history(
+    path: Path | str,
+    max_records: int = DEFAULT_MAX_RECORDS,
+) -> AlertHistory:
+    """Инициализирует глобальный инстанс. Вызывается один раз в main.py."""
+    global _history_instance
+    with _history_init_lock:
+        _history_instance = AlertHistory(path, max_records=max_records)
+        return _history_instance
+
+
+def get_alert_history() -> AlertHistory:
+    """
+    Возвращает глобальный инстанс. Если init_alert_history не вызывался —
+    создаёт с дефолтным путём.
+
+    Для тестов можно переопределить через set_alert_history(AlertHistory(...)).
+    """
+    global _history_instance
+    with _history_init_lock:
+        if _history_instance is None:
+            from src.utils.config import Config
+            _history_instance = AlertHistory(
+                path=Config.ALERT_HISTORY_FILE,
+                max_records=DEFAULT_MAX_RECORDS,
+            )
+        return _history_instance
+
+
+def set_alert_history(history: AlertHistory | None) -> None:
+    """Переопределяет глобальный инстанс. Для тестов."""
+    global _history_instance
+    with _history_init_lock:
+        _history_instance = history
+
+# ==================== СИНГЛТОН ====================
+
+_history_instance: AlertHistory | None = None
+_history_init_lock = threading.RLock()
+

@@ -23,6 +23,7 @@ def export_options_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton("📋 Отслеживаемые алерты", callback_data="export_tracked")],
         [InlineKeyboardButton("✏️ Ввести тикеры вручную", callback_data="export_manual")],
+        [InlineKeyboardButton("📜 История алертов", callback_data="history_menu")],
         [InlineKeyboardButton("🔙 Назад в меню", callback_data="menu_main")],
     ]
     return InlineKeyboardMarkup(keyboard)
@@ -102,17 +103,13 @@ def skip_note_keyboard() -> InlineKeyboardMarkup:
 # ==================== НАСТРОЙКИ ====================
 
 def main_menu_keyboard_with_settings(threshold_describe: str) -> InlineKeyboardMarkup:
-    """
-    Главное меню с кнопкой настроек, показывающей текущий порог.
-
-    threshold_describe — результат RuntimeSettings.describe(), например 'ВСЕ' или '≥ 0'.
-    """
     keyboard = [
         [InlineKeyboardButton("➕ Добавить алерт", callback_data="menu_add")],
         [InlineKeyboardButton("🔍 Скринер", callback_data="menu_screener")],
         [InlineKeyboardButton("💰 Текущие цены", callback_data="menu_prices")],
         [InlineKeyboardButton("📋 Мои алерты", callback_data="menu_list")],
         [InlineKeyboardButton("📊 Выгрузить данные", callback_data="menu_export")],
+        [InlineKeyboardButton("📜 История алертов", callback_data="history_menu")],
         [InlineKeyboardButton(
             f"⚙️ Настройки (порог: {threshold_describe})",
             callback_data="settings_menu",
@@ -125,13 +122,9 @@ def main_menu_keyboard_with_settings(threshold_describe: str) -> InlineKeyboardM
 def settings_menu_keyboard(
     threshold_describe: str,
     invalid_describe: str = "ВКЛ",
+    depth_describe: str = "1000",
 ) -> InlineKeyboardMarkup:
-    """
-    Меню настроек.
-
-    threshold_describe — RuntimeSettings.describe() (например 'ВСЕ', '≥ 0').
-    invalid_describe — 'ВКЛ' или 'ВЫКЛ' для send_invalid_alerts.
-    """
+    """Меню настроек."""
     keyboard = [
         [InlineKeyboardButton(
             f"⚙️ Порог алертов: {threshold_describe}",
@@ -140,6 +133,10 @@ def settings_menu_keyboard(
         [InlineKeyboardButton(
             f"⛔ Hard-filter алерты: {invalid_describe}",
             callback_data="settings_toggle_invalid",
+        )],
+        [InlineKeyboardButton(
+            f"📜 Глубина истории: {depth_describe}",
+            callback_data="settings_history_depth",
         )],
         [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
     ]
@@ -210,5 +207,78 @@ def settings_custom_score_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton("◀ Назад", callback_data="settings_threshold")],
         [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# ==================== ГЛУБИНА ИСТОРИИ ====================
+
+def history_depth_keyboard(
+    presets: tuple[int, ...],
+    current: int,
+) -> InlineKeyboardMarkup:
+    """
+    Выбор глубины истории алертов.
+
+    presets — кортеж из Config.HISTORY_DEPTH_PRESETS.
+    current — текущая глубина, чтобы отметить активный ✅.
+    """
+    keyboard: list[list[InlineKeyboardButton]] = []
+
+    row: list[InlineKeyboardButton] = []
+    for p in presets:
+        label = f"{p}"
+        if p == current:
+            label = f"✅ {p}"
+        row.append(InlineKeyboardButton(label, callback_data=f"set_depth|{p}"))
+
+    # Разбиваем по 2 в ряд
+    for i in range(0, len(row), 2):
+        keyboard.append(row[i:i + 2])
+
+    keyboard.append([
+        InlineKeyboardButton("✏️ Свой", callback_data="set_depth_custom")
+    ])
+    keyboard.append([
+        InlineKeyboardButton("◀ Назад", callback_data="settings_menu")
+    ])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def history_custom_depth_keyboard() -> InlineKeyboardMarkup:
+    """Клавиатура при вводе своего значения глубины."""
+    keyboard = [
+        [InlineKeyboardButton("◀ Назад", callback_data="settings_history_depth")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def alert_history_menu_keyboard(count: int) -> InlineKeyboardMarkup:
+    """Меню «История алертов» (из главного меню)."""
+    keyboard = [
+        [InlineKeyboardButton(
+            f"📄 Выгрузить CSV ({count} записей)",
+            callback_data="history_export_csv",
+        )],
+        [InlineKeyboardButton(
+            "🗑 Очистить историю",
+            callback_data="history_clear_confirm",
+        )],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def alert_history_clear_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Подтверждение очистки истории."""
+    keyboard = [
+        [InlineKeyboardButton(
+            "🗑 Да, очистить всё",
+            callback_data="history_clear_yes",
+        )],
+        [InlineKeyboardButton(
+            "◀ Отмена",
+            callback_data="history_menu",
+        )],
     ]
     return InlineKeyboardMarkup(keyboard)

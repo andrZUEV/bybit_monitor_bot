@@ -19,6 +19,7 @@ from typing import Any
 from telegram.ext import ContextTypes
 
 from src.api.bybit_client import BybitClient
+from src.core.alert_history import get_alert_history
 from src.core.alerts import AlertsManager
 from src.core.settings import get_settings
 from src.parsers.mass_add import parse_mass_add
@@ -99,7 +100,7 @@ class TelegramHandlers:
             f"Hard-filter алерты: <b>{s.describe_invalid()}</b>",
             parse_mode="HTML",
             reply_markup=keyboards.settings_menu_keyboard(
-                s.describe(), s.describe_invalid(),
+                s.describe(), s.describe_invalid(), s.describe_depth(),
             ),
         )
 
@@ -230,10 +231,38 @@ class TelegramHandlers:
                 f"✅ Порог установлен: <b>{s.describe()}</b>",
                 parse_mode="HTML",
                 reply_markup=keyboards.settings_menu_keyboard(
-                    s.describe(), s.describe_invalid(),
+                    s.describe(), s.describe_invalid(),s.describe_depth(),
                 ),
             )
-            return        
+            return     
+
+        # --- Настройки: ввод своей глубины истории ---
+        if step == "waiting_custom_depth":
+            try:
+                new_depth = int(text.strip())
+            except ValueError:
+                await update.message.reply_text(
+                    "❌ Не понял число. Введите, например, <code>2000</code>.",
+                    parse_mode="HTML",
+                    reply_markup=keyboards.history_custom_depth_keyboard(),
+                )
+                return
+            new_depth = max(100, min(100_000, new_depth))
+            s = get_settings()
+            s.alert_history_depth = new_depth
+            s.save()
+            history = get_alert_history()
+            history.set_max_records(new_depth)
+            self._reset_state(chat_id)
+            logger.info(f"📜 Глубина истории: {s.describe_depth()}")
+            await update.message.reply_text(
+                f"✅ Глубина истории: <b>{s.describe_depth()}</b>",
+                parse_mode="HTML",
+                reply_markup=keyboards.settings_menu_keyboard(
+                    s.describe(), s.describe_invalid(), s.describe_depth(),
+                ),
+            )
+            return   
 
         # --- Массовое добавление (текстом, без диалога) ---
         if "\n" in text.strip():
@@ -608,7 +637,7 @@ class TelegramHandlers:
                 f"Hard-filter алерты: <b>{s.describe_invalid()}</b>",
                 parse_mode="HTML",
                 reply_markup=keyboards.settings_menu_keyboard(
-                    s.describe(), s.describe_invalid(),
+                    s.describe(), s.describe_invalid(),s.describe_depth(),
                 ),
             )
 
@@ -639,7 +668,7 @@ class TelegramHandlers:
                 f"✅ Порог установлен: <b>{s.describe()}</b>",
                 parse_mode="HTML",
                 reply_markup=keyboards.settings_menu_keyboard(
-                    s.describe(), s.describe_invalid(),
+                    s.describe(), s.describe_invalid(),s.describe_depth(),
                 ),
             )
 
@@ -685,8 +714,107 @@ class TelegramHandlers:
                 f"✅ Hard-filter алерты: <b>{s.describe_invalid()}</b>",
                 parse_mode="HTML",
                 reply_markup=keyboards.settings_menu_keyboard(
-                    s.describe(), s.describe_invalid(),
+                    s.describe(), s.describe_invalid(),s.describe_depth(),
                 ),
+            )
+
+        # ========== Глубина истории ==========
+        elif data == "settings_history_depth":
+            s = get_settings()
+            await query.edit_message_text(
+                f"📜 <b>Глубина истории алертов</b>\n\n"
+                f"Текущая: <b>{s.describe_depth()}</b>\n\n"
+                f"Сколько последних алертов хранить для анализа.\n"
+                f"Файл: <code>{Config.ALERT_HISTORY_FILE.name}</code>",
+                parse_mode="HTML",
+                reply_markup=keyboards.history_depth_keyboard(
+                    Config.HISTORY_DEPTH_PRESETS,
+                    s.alert_history_depth,
+                ),
+            )
+
+        elif data.startswith("set_depth|"):
+            raw = data.split("|", 1)[1]
+            try:
+                new_depth = int(raw)
+            except ValueError:
+                await query.answer("Ошибка парсинга", show_alert=True)
+                return
+            s = get_settings()
+            s.alert_history_depth = max(100, min(100_000, new_depth))
+            s.save()
+            history = get_alert_history()
+            history.set_max_records(s.alert_history_depth)
+            logger.info(f"📜 Глубина истории: {s.describe_depth()}")
+            await query.edit_message_text(
+                f"✅ Глубина истории: <b>{s.describe_depth()}</b>",
+                parse_mode="HTML",
+                reply_markup=keyboards.settings_menu_keyboard(
+                    s.describe(), s.describe_invalid(), s.describe_depth(),
+                ),
+            )
+
+        elif data == "set_depth_custom":
+            self.user_state[chat_id] = {"step": "waiting_custom_depth"}
+            await query.edit_message_text(
+                "✏️ <b>Своя глубина истории</b>\n\n"
+                "Введите число от <b>100</b> до <b>100000</b>.\n"
+                "Например: <code>2000</code>",
+                parse_mode="HTML",
+                reply_markup=keyboards.history_custom_depth_keyboard(),
+            )
+
+        # ========== История алертов ==========
+        elif data == "history_menu":
+            history = get_alert_history()
+            count = history.count()
+            await query.edit_message_text(
+                f"📜 <b>История алертов</b>\n\n"
+                f"Записей: <b>{count}</b>\n"
+                f"Глубина: <b>{history.max_records}</b>\n"
+                f"Файл: <code>{history.path.name}</code>\n\n"
+                f"Выгрузить в CSV или очистить:",
+                parse_mode="HTML",
+                reply_markup=keyboards.alert_history_menu_keyboard(count),
+            )
+
+        elif data == "history_export_csv":
+            history = get_alert_history()
+            if history.is_empty():
+                await query.answer("История пуста", show_alert=True)
+                return
+            await query.edit_message_text("⏳ Генерирую CSV...")
+            from src.utils.config import Config as _C
+            out_path = _C.EXPORTS_DIR / f"alert_history_{int(time.time())}.csv"
+            csv_path = await asyncio.to_thread(history.export_csv, out_path)
+            with open(csv_path, "rb") as f:
+                await query.message.reply_document(
+                    document=InputFile(f, filename=csv_path.name),
+                    caption=f"📜 История алертов: {history.count()} записей",
+                )
+            try:
+                os.remove(csv_path)
+            except Exception:
+                pass
+            await query.edit_message_text(
+                "✅ CSV отправлен!",
+                reply_markup=keyboards.alert_history_menu_keyboard(history.count()),
+            )
+
+        elif data == "history_clear_confirm":
+            await query.edit_message_text(
+                "🗑 <b>Очистить всю историю алертов?</b>\n\n"
+                "Действие необратимо.",
+                parse_mode="HTML",
+                reply_markup=keyboards.alert_history_clear_confirm_keyboard(),
+            )
+
+        elif data == "history_clear_yes":
+            history = get_alert_history()
+            history.clear()
+            await query.edit_message_text(
+                "✅ История очищена",
+                reply_markup=keyboards.alert_history_menu_keyboard(0),
             )
 
         # ========== Необработанный callback ==========
@@ -900,6 +1028,8 @@ class TelegramHandlers:
             "\n\n<b>Настройки:</b>\n"
             "⚙️ Кнопка в меню или команда <code>/settings</code> — "
             "изменить порог score для отправки алертов."
+            "\n\n<b>История алертов:</b>\n"
+            "📜 Выгрузить данные → 📜 История алертов — CSV последних алертов."
         )
         try:
             if update.callback_query:
