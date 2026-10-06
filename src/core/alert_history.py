@@ -425,9 +425,7 @@ def build_alert_record(
         close_in_correct_third=bool(evaluation.get("close_in_correct_third", False)),
         volume_score=float(evaluation.get("volume_score", 0.0)),
         rsi_score=float(evaluation.get("rsi_score", 0.0)),
-        worn_level=(
-            int(evaluation.get("touches", 0)) >= 5
-        ),
+        worn_level=bool(evaluation.get("worn_level", False)),
         touches_count=int(evaluation.get("touches", 0)),
         htf_trend=str(evaluation.get("htf_trend", "side")),
         htf_against=bool(evaluation.get("htf_against", False)),

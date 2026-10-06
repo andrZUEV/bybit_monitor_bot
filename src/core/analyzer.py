@@ -617,9 +617,12 @@ def evaluate_alert(
         timeframe_minutes=15,
         lookback_hours=THRESHOLDS["touches_lookback_hours"],
     )
-    if touches >= THRESHOLDS["worn_touches"]:
-        score += PENALTIES["worn_level"]
-        filters.append(f"Уровень изношен ({touches} касаний) {PENALTIES['worn_level']}")
+    worn_level_flag = touches >= THRESHOLDS["worn_touches"]
+    if worn_level_flag:
+        # НЕ штрафуем score — worn_level теперь hard_filter (см. блок 11).
+        filters.append(
+            f"⛔ Уровень изношен ({touches} касаний) — hard_filter"
+        )
     else:
         filters.append(f"Уровень свежий ({touches} касаний)")
 
@@ -674,8 +677,8 @@ def evaluate_alert(
             )
             htf_against_flag = against
             if against:
-                score += PENALTIES["htf_against"]
-                filters.append(f"4H против направления {PENALTIES['htf_against']}")
+                # НЕ штрафуем score — trend_conflict теперь в risk (hard_filter).
+                filters.append("⛔ 4H против направления — учитывается в risk")
             else:
                 filters.append(f"4H структура: {structure.direction} (согласовано)")
     else:
@@ -694,7 +697,15 @@ def evaluate_alert(
     hard_filter: str | None = None
     hard_filter_ru: str | None = None
 
-    atr_for_history: float | None = None  # для AlertRecord
+    # ── Приоритет hard_filter #1: worn_level (главнее risk) ──
+    # Если уровень изношен — не считаем сделку по стратегии.
+    # Risk может ошибиться (структура красивая, но уровень мёртвый).
+    if worn_level_flag:
+        hard_filter = "worn_level"
+        hard_filter_ru = "Уровень изношен (много касаний)"
+        # штраф НЕ применяем — только hard_filter
+
+    atr_for_history: float | None = None
     if risk_cfg is not None:
         atr_15m = _calc_atr_15m(candles_15m)
         if direction == "any":
@@ -744,17 +755,19 @@ def evaluate_alert(
                 )
 
                 if not risk_result.valid:
-                    hard_filter = risk_result.reason or "unknown"
-                    hard_filter_ru = format_reason_ru(hard_filter)
-                    score += PENALTIES["hard_filter"]
-                    filters.append(
-                        f"⛔ Hard filter: {hard_filter_ru} "
-                        f"({PENALTIES['hard_filter']})"
-                    )
-                else:
-                    filters.append(
-                        f"Risk OK: RR={risk_result.rr:.2f} "
-                        f"size={risk_result.size:.4f}"
+                # Risk нашёл hard_filter, но НЕ перезатираем уже установленный worn_level
+                    if hard_filter is None:
+                        hard_filter = risk_result.reason or "unknown"
+                        hard_filter_ru = format_reason_ru(hard_filter)
+                        score += PENALTIES["hard_filter"]
+                        filters.append(
+                            f"⛔ Hard filter: {hard_filter_ru} "
+                            f"({PENALTIES['hard_filter']})"
+                        )
+                    else:
+                        filters.append(
+                            f"⛔ Risk тоже против ({risk_result.reason}), "
+                            f"но hard_filter уже: {hard_filter}"
                     )
             else:
                 filters.append("ATR(15m) недоступен → risk не посчитан")
@@ -808,6 +821,7 @@ def evaluate_alert(
         "close_in_correct_third": close_in_correct_third_flag,
         "htf_against": htf_against_flag,
         "atr_value": atr_for_history,
+        "worn_level": worn_level_flag,
     }
 
 
