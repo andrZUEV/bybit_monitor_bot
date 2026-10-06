@@ -78,7 +78,7 @@ class Config:
         3.0,
     )
 
-    HISTORY_DEPTH_PRESETS: tuple[int, ...] = (100, 500, 1000, 5000)
+    HISTORY_DEPTH_PRESETS: tuple[int, ...] = (1000, 5000, 10000, 50000)
 
     # Слать ли hard-filter-алерты (⛔ СДЕЛКА НЕ ПО СТРАТЕГИИ).
     # True — шлём всё (включая hard_filter), False — только валидные сделки.

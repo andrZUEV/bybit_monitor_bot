@@ -15,6 +15,7 @@ def _make_record(
     final_score: float = 3.5,
     was_sent: bool = True,
     ts: float | None = None,
+    candle_ts=1_700_000_000_000,
 ) -> AlertRecord:
     return AlertRecord(
         timestamp=ts if ts is not None else 1_700_000_000.0,
@@ -26,7 +27,6 @@ def _make_record(
         verdict="⚠️ Weak",
         was_sent=was_sent,
         skip_reason=None if was_sent else "score_below",
-        candle_ts=1_700_000_000_000,
         candle={"open": 99.0, "high": 101.0, "low": 98.5, "close": 100.5, "volume": 1234.0},
         prev_candle={"open": 98.0, "high": 99.5, "low": 97.5, "close": 99.0},
         volume_ratio=1.5,
@@ -51,6 +51,7 @@ def _make_record(
         timeframe_used="15m",
         atr_value=0.5,
         hard_filter=None,
+        candle_ts=candle_ts, 
     )
 
 
@@ -88,8 +89,9 @@ class TestAppendLoad:
         assert history.is_empty() is True
 
     def test_count_after_append(self, history):
-        history.append(_make_record())
-        history.append(_make_record())
+        # Разные candle_ts → разные ключи дедупликации → обе сохраняются
+        history.append(_make_record(candle_ts=1))
+        history.append(_make_record(candle_ts=2))
         assert history.count() == 2
 
     def test_roundtrip_full_record(self, history):
@@ -145,8 +147,8 @@ class TestPrune:
 
 class TestClear:
     def test_clear(self, history):
-        history.append(_make_record())
-        history.append(_make_record())
+        history.append(_make_record(candle_ts=1))
+        history.append(_make_record(candle_ts=2))
         assert history.count() == 2
 
         history.clear()

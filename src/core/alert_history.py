@@ -106,33 +106,116 @@ class AlertHistory:
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
         self._lock = threading.RLock()
+        self._records: list[AlertRecord] = []
+        self._index: dict[tuple, AlertRecord] = {}
+        self._load_into_memory()
+
+    def _load_into_memory(self) -> None:
+        """
+        Загружает все записи в память и строит индекс по
+        (symbol, level, direction, candle_ts).
+
+        При дублях в файле оставляет ПОСЛЕДНЮЮ запись; если среди них
+        была was_sent=True — оставляет её.
+        """
+        self._records = []
+        self._index = {}
+        if not self.path.exists():
+            return
+        try:
+            with open(self.path, encoding="utf-8") as f:
+                for i, line in enumerate(f, start=1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        rec = AlertRecord(**data)
+                    except (json.JSONDecodeError, TypeError, KeyError) as e:
+                        logger.warning(
+                            f"⚠️ Пропущена битая запись (строка {i}): {e}"
+                        )
+                        continue
+                    self._add_to_memory(rec)
+        except FileNotFoundError:
+            pass
+
+    def _add_to_memory(self, rec: AlertRecord) -> None:
+        """Добавляет запись в память с дедупликацией по ключу."""
+        key = (rec.symbol, rec.level, rec.direction, rec.candle_ts)
+        existing = self._index.get(key)
+        if existing is not None:
+            # Если ранее была отправленная, а новая — нет — оставляем старую
+            if existing.was_sent and not rec.was_sent:
+                return
+            # Иначе — заменяем (найти и удалить старую в списке)
+            try:
+                self._records.remove(existing)
+            except ValueError:
+                pass
+        self._records.append(rec)
+        self._index[key] = rec
 
     # ---------- запись ----------
 
     def append(self, record: AlertRecord) -> None:
-        """Добавляет запись в файл. При превышении лимита — обрезает."""
+        """
+        Добавляет запись с дедупликацией по
+        (symbol, level, direction, candle_ts).
+
+        Если такая запись уже есть:
+          - old.was_sent=True, new.was_sent=False → не заменяем
+          - иначе → заменяем на новую (свежие данные)
+
+        Обрезает файл, если превышен max_records.
+        """
         with self._lock:
-            line = json.dumps(asdict(record), ensure_ascii=False)
-            with open(self.path, "a", encoding="utf-8") as f:
-                f.write(line)
-                f.write("\n")
+            self._add_to_memory(record)
+            if len(self._records) > self.max_records:
+                # Оставляем последние max_records
+                keep = self._records[-self.max_records:]
+                self._records = keep
+                self._index = {
+                    (r.symbol, r.level, r.direction, r.candle_ts): r
+                    for r in keep
+                }
+                logger.info(f"✂️ История обрезана до {len(keep)}")
+            self._rewrite_unlocked()
+
+    def _rewrite_unlocked(self) -> None:
+        """Атомарно переписывает файл целиком из self._records."""
+        if not self._records:
+            if self.path.exists():
+                self.path.unlink()
+            return
+
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=self.path.name + ".", suffix=".tmp", dir=str(self.path.parent),
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                for rec in self._records:
+                    f.write(json.dumps(asdict(rec), ensure_ascii=False))
+                    f.write("\n")
                 f.flush()
                 os.fsync(f.fileno())
-
-            if self._count_unlocked() > self.max_records:
-                self._prune_unlocked()
+            os.replace(tmp_name, self.path)
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
     # ---------- чтение ----------
 
     def load_all(self) -> list[AlertRecord]:
-        """Возвращает все записи (может быть меньше max_records)."""
         with self._lock:
-            return self._load_unlocked()
+            return list(self._records)
 
     def count(self) -> int:
-        """Количество записей в файле."""
         with self._lock:
-            return self._count_unlocked()
+            return len(self._records)
 
     def is_empty(self) -> bool:
         return self.count() == 0
@@ -140,21 +223,24 @@ class AlertHistory:
     # ---------- управление ----------
 
     def clear(self) -> None:
-        """Очищает файл."""
         with self._lock:
+            self._records = []
+            self._index = {}
             if self.path.exists():
                 self.path.unlink()
             logger.info("🗑 История алертов очищена")
 
     def set_max_records(self, n: int) -> None:
-        """
-        Меняет глубину хранения. Если записей больше нового лимита —
-        сразу обрезает.
-        """
         with self._lock:
             self.max_records = max(1, int(n))
-            if self._count_unlocked() > self.max_records:
-                self._prune_unlocked()
+            if len(self._records) > self.max_records:
+                keep = self._records[-self.max_records:]
+                self._records = keep
+                self._index = {
+                    (r.symbol, r.level, r.direction, r.candle_ts): r
+                    for r in keep
+                }
+                self._rewrite_unlocked()
             logger.info(f"📜 Глубина истории: {self.max_records}")
 
     # ---------- экспорт ----------
@@ -190,7 +276,8 @@ class AlertHistory:
             "recorded_at",
         ]
 
-        with open(out, "w", newline="", encoding="utf-8") as f:
+        #utf-8-sig добавляет BOM — Excel читает UTF-8 правильно
+        with open(out, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
             writer.writerow(base_cols)
 

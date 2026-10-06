@@ -45,7 +45,7 @@ class RuntimeSettings:
     """Настройки, которые можно менять без рестарта бота."""
     alert_min_score: float = DEFAULT_MIN_SCORE
     send_invalid_alerts: bool = True
-    alert_history_depth: int = 1000
+    alert_history_depth: int = 10000
 
     # Путь хранилища (не сериализуется в JSON)
     _path: Path | None = None
@@ -73,8 +73,8 @@ class RuntimeSettings:
 
         send_invalid_raw = data.get("send_invalid_alerts", True)
         send_invalid = cls._parse_bool(send_invalid_raw, default=True)
-        depth_raw = data.get("alert_history_depth", 1000)
-        depth = cls._parse_depth(depth_raw, default=1000)
+        depth_raw = data.get("alert_history_depth", 10000)
+        depth = cls._parse_depth(depth_raw, default=10000)
 
         s = cls(
             alert_min_score=min_score,
@@ -222,10 +222,9 @@ class RuntimeSettings:
         return default
 
     @staticmethod
-    def _parse_depth(raw: object, *, default: int = 1000) -> int:
-        """Принимает int | str. Валидация: 100..100_000."""
+    def _parse_depth(raw: object, *, default: int = 10000) -> int:
         try:
-            v = int(raw)  # type: ignore[arg-type]
+            v = int(raw)
         except (TypeError, ValueError):
             return default
         return max(100, min(100_000, v))

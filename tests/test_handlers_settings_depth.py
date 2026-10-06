@@ -192,10 +192,10 @@ class TestSetDepthCustom:
 
 class TestHistoryMenu:
     async def test_history_menu_shows_count(self, handlers):
-        # Наполним историю
+        # Наполним историю: 3 разных candle_ts → 3 записи (дедуп не схлопнет)
         from tests.test_alert_history import _make_record
-        for _ in range(3):
-            get_alert_history().append(_make_record())
+        for i in range(3):
+            get_alert_history().append(_make_record(candle_ts=i + 1))
 
         update = _make_callback_update("history_menu")
         await handlers.handle_callback(update, None)
@@ -222,13 +222,15 @@ class TestHistoryMenu:
     async def test_history_clear_yes(self, handlers):
         from tests.test_alert_history import _make_record
         history = get_alert_history()
-        history.append(_make_record())
-        history.append(_make_record())
+        history.append(_make_record(candle_ts=1))
+        history.append(_make_record(candle_ts=2))
         assert history.count() == 2
 
+        # Вызываем колбэк "history_clear_yes"
         update = _make_callback_update("history_clear_yes")
         await handlers.handle_callback(update, None)
 
+        # Проверяем, что история пуста
         assert history.count() == 0
         text = update.callback_query.edit_message_text.await_args.args[0]
         assert "очищена" in text.lower()
