@@ -89,6 +89,41 @@ class Config:
     LEVEL_SCAN_SCORE_PRESETS: tuple[float, ...] = (
         3.0, 5.0, 6.0, 7.0,
     )
+    # ==================== Дневник разворотов (Этап 7) ====================
+    # Фиксация исхода каждого price-alert'а и статистика по сетапам.
+
+    # Включён ли дневник (пишем pending, резолвим, показываем статистику).
+    REVERSAL_DIARY_ENABLED: bool = os.getenv(
+        "REVERSAL_DIARY_ENABLED", "true"
+    ).strip().lower() in ("1", "true", "yes", "on")
+
+    # Сколько свечей 15m ждём до резолва (8 × 15m = 2 часа).
+    REVERSAL_LOOKAHEAD_BARS: int = int(os.getenv("REVERSAL_LOOKAHEAD_BARS", "8"))
+
+    # Ход в сторону алерта ≥ N × ATR_1h → success.
+    REVERSAL_MIN_MOVE_ATR: float = float(os.getenv("REVERSAL_MIN_MOVE_ATR", "1.0"))
+
+    # Стоп-зона: level ∓ SL × ATR_1h.
+    REVERSAL_SL_BUFFER_ATR: float = float(os.getenv("REVERSAL_SL_BUFFER_ATR", "0.5"))
+
+    # Порог n для показа строки «📈 История...» в алерте.
+    REVERSAL_MIN_N_DISPLAY: int = int(os.getenv("REVERSAL_MIN_N_DISPLAY", "15"))
+
+    # Pending без резолва дольше N часов → expired.
+    REVERSAL_PENDING_TIMEOUT_HOURS: int = int(
+        os.getenv("REVERSAL_PENDING_TIMEOUT_HOURS", "48")
+    )
+
+    # Писать ли pending для алертов с hard_filter / низким score.
+    # false = только «чистые» алерты (рекомендуется).
+    REVERSAL_RECORD_WEAK: bool = os.getenv(
+        "REVERSAL_RECORD_WEAK", "false"
+    ).strip().lower() in ("1", "true", "yes", "on")
+
+    # Интервал между проходами resolve_all_pending (минуты).
+    REVERSAL_RESOLVE_INTERVAL_MIN: int = int(
+        os.getenv("REVERSAL_RESOLVE_INTERVAL_MIN", "20")
+    )
 
     # Слать ли hard-filter-алерты (⛔ СДЕЛКА НЕ ПО СТРАТЕГИИ).
     # True — шлём всё (включая hard_filter), False — только валидные сделки.
@@ -144,6 +179,7 @@ class Config:
     COOLDOWNS_FILE: Path = DATA_DIR / "cooldowns.json"
     SETTINGS_FILE: Path = DATA_DIR / "settings.json"
     ALERT_HISTORY_FILE: Path = DATA_DIR / "alert_history.jsonl"
+    REVERSAL_DIARY_FILE: Path = DATA_DIR / "reversal_diary.jsonl"
 
     # ==================== Валидация ====================
     @classmethod

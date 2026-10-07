@@ -48,6 +48,15 @@ class BybitClient:
     # Коды Bybit, при которых имеет смысл повторить запрос
     RETRYABLE_CODES = {-1001, -1000, 10002, 10003,10006, 429}
 
+    # TTL кэша klines (в секундах) по интервалу Bybit.
+    # Используется в get_klines_cached().
+    _KLINES_CACHE_TTL: dict[str, int] = {
+        "15":  15 * 60,        # 15 минут
+        "60":  60 * 60,        # 1 час
+        "240": 240 * 60,       # 4 часа
+        "D":   24 * 60 * 60,   # 24 часа
+    }
+
     def __init__(self, max_retries: int = 3, base_delay: float = 1.0):
         self.max_retries = max_retries
         self.base_delay = base_delay
@@ -64,6 +73,15 @@ class BybitClient:
         self._last_request_ts = 0.0
         # ~8 req/sec с запасом от 10 (лимит Bybit public).
         self._min_request_interval = 0.12
+
+        # Кэш klines: (symbol, category, interval) -> (timestamp, data).
+        # TTL по ТФ: 15m → 15 мин, 1H → 60 мин, 4H → 4 ч, 1D → 24 ч.
+        # Нужен для reversal_diary, level_scanner, monitor — они ходят
+        # за одними и теми же свечами регулярно.
+        self._klines_cache: dict[
+            tuple[str, str, str], tuple[float, list[list]]
+        ] = {}
+        self._klines_cache_lock = threading.RLock()
 
     # ==================== ВНУТРЕННИЕ ====================
 
@@ -251,6 +269,50 @@ class BybitClient:
         if result and "list" in result:
             return result["list"]
         return None
+
+    def get_klines_cached(
+        self,
+        symbol: str,
+        category: str,
+        interval: str,
+        limit: int = 200,
+        *,
+        force_refresh: bool = False,
+    ) -> list[list] | None:
+        """
+        Возвращает klines из кэша (TTL по интервалу) или запрашивает.
+        force_refresh=True — игнорировать кэш (для кнопки «Обновить»).
+        """
+        key = (symbol, category, interval)
+        ttl = self._KLINES_CACHE_TTL.get(interval, 0)
+        now = time.time()
+
+        if not force_refresh:
+            with self._klines_cache_lock:
+                entry = self._klines_cache.get(key)
+                if entry is not None and (now - entry[0]) < ttl:
+                    return entry[1]
+
+        data = self.get_klines(symbol, category, interval, limit)
+        if data:
+            with self._klines_cache_lock:
+                self._klines_cache[key] = (now, data)
+        return data
+
+    def invalidate_klines_cache(self, symbol: str | None = None) -> int:
+        """
+        Сбрасывает кэш klines. Без аргумента — весь; с символом — только
+        по этому символу. Возвращает число удалённых записей.
+        """
+        with self._klines_cache_lock:
+            if symbol is None:
+                n = len(self._klines_cache)
+                self._klines_cache.clear()
+                return n
+            keys = [k for k in self._klines_cache if k[0] == symbol]
+            for k in keys:
+                del self._klines_cache[k]
+            return len(keys)
 
     def get_candle_volume_ratio(
         self,

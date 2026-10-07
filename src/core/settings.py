@@ -53,6 +53,9 @@ class RuntimeSettings:
     level_scan_enabled: bool = True
     level_scan_hours_utc: str = "6,18"      # часы UTC через запятую
     level_scan_min_score: float = 5.0       # порог score для попадания в сводку
+    # --- Reversal diary (Этап 7) ---
+    reversal_diary_enabled: bool = True
+    reversal_min_n_display: int = 15
 
     # Путь хранилища (не сериализуется в JSON)
     _path: Path | None = None
@@ -92,6 +95,14 @@ class RuntimeSettings:
         )
         ls_min_score = cls._parse_score(
             data.get("level_scan_min_score", 5.0), default=5.0,
+        )
+
+        # Reversal diary
+        rd_enabled = cls._parse_bool(
+            data.get("reversal_diary_enabled", True), default=True,
+        )
+        rd_min_n = cls._parse_depth(  # используем как int-парсер
+            data.get("reversal_min_n_display", 15), default=15,
         )
 
         s = cls(
@@ -159,6 +170,8 @@ class RuntimeSettings:
                 "level_scan_enabled": self.level_scan_enabled,
                 "level_scan_hours_utc": self.level_scan_hours_utc,
                 "level_scan_min_score": self.level_scan_min_score,
+                "reversal_diary_enabled": self.reversal_diary_enabled,
+                "reversal_min_n_display": self.reversal_min_n_display,
             }
 
             fd, tmp_name = tempfile.mkstemp(
@@ -176,6 +189,10 @@ class RuntimeSettings:
                 except OSError:
                     pass
                 raise
+
+    def describe_reversal_diary(self) -> str:
+        """Короткое описание статуса дневника разворотов."""
+        return "ВКЛ" if self.reversal_diary_enabled else "ВЫКЛ"
 
     # ---------- хелперы ----------
 

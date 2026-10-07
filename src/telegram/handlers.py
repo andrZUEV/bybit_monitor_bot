@@ -21,6 +21,7 @@ from telegram.ext import ContextTypes
 
 from src.api.bybit_client import BybitClient
 from src.core import level_scanner
+from src.core.level_scanner import _round_price_for_callback
 from src.core.alert_history import get_alert_history
 from src.core.alerts import AlertsManager
 from src.core.settings import get_settings
