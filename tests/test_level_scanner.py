@@ -311,13 +311,91 @@ def test_round_price_for_callback_tiny():
 
 
 def test_build_keyboard_one_per_symbol():
+    """Компактная клавиатура: по 1 кнопке на символ + сервисные."""
     c1 = _make_candidate(symbol="ETHUSDT", price=2685.0, score=7.0)
     c2 = _make_candidate(symbol="ETHUSDT", price=2700.0, score=6.0)
     c3 = _make_candidate(symbol="SOLUSDT", price=117.8, score=8.0)
     results = {"ETHUSDT": [c1, c2], "SOLUSDT": [c3]}
     kb = build_keyboard(results)
-    # 1 на символ (2) + Все + Обновить + Меню = 5 строк
-    assert len(kb.inline_keyboard) == 5
+    # 2 кнопки на символы (ETH, SOL) + «Добавить всё» + «Все уровни» +
+    # «Обновить» + «Меню» = 6 строк
+    assert len(kb.inline_keyboard) == 6
+
+    # Проверяем, что кнопки на символы содержат правильные callback'и
+    all_cbs = [
+        btn.callback_data
+        for row in kb.inline_keyboard
+        for btn in row
+    ]
+    assert "ls_add_sym|ETHUSDT" in all_cbs
+    assert "ls_add_sym|SOLUSDT" in all_cbs
+    assert "ls_add_all" in all_cbs
+    assert "ls_show_all" in all_cbs
+    assert "ls_scan_now" in all_cbs
+    assert "menu_main" in all_cbs
+
+
+def test_build_keyboard_symbol_labels():
+    """Правильное склонение «уровень/уровня/уровней»."""
+    c1 = _make_candidate(symbol="BTCUSDT", price=100.0)
+    c2 = _make_candidate(symbol="BTCUSDT", price=200.0)
+    c3 = _make_candidate(symbol="ETHUSDT", price=100.0)
+    c4 = _make_candidate(symbol="ETHUSDT", price=200.0)
+    c5 = _make_candidate(symbol="ETHUSDT", price=300.0)
+    c6 = _make_candidate(symbol="ETHUSDT", price=400.0)
+    c7 = _make_candidate(symbol="ETHUSDT", price=500.0)
+    c8 = _make_candidate(symbol="SOLUSDT", price=100.0)
+    results = {
+        "BTCUSDT": [c1, c2],                   # 2 → "уровня"
+        "ETHUSDT": [c3, c4, c5, c6, c7],       # 5 → "уровней"
+        "SOLUSDT": [c8],                       # 1 → "уровень"
+    }
+    kb = build_keyboard(results)
+    labels = [
+        btn.text
+        for row in kb.inline_keyboard
+        for btn in row
+    ]
+    assert any("BTCUSDT · 2 уровня" in lbl for lbl in labels)
+    assert any("ETHUSDT · 5 уровней" in lbl for lbl in labels)
+    assert any("SOLUSDT · 1 уровень" in lbl for lbl in labels)
+
+
+def test_build_keyboard_empty():
+    """Пустой results → только сервисные кнопки (Обновить, Меню)."""
+    kb = build_keyboard({})
+    # Без символов нет «Добавить всё» и «Все уровни»
+    # Остаётся: Обновить + Меню = 2
+    assert len(kb.inline_keyboard) == 2
+    cbs = [btn.callback_data for row in kb.inline_keyboard for btn in row]
+    assert "ls_scan_now" in cbs
+    assert "menu_main" in cbs
+    assert "ls_add_all" not in cbs
+    assert "ls_show_all" not in cbs
+
+
+def test_build_keyboard_sorted_by_symbol():
+    """Символы в клавиатуре идут в алфавитном порядке."""
+    c_a = _make_candidate(symbol="SOLUSDT", price=100.0)
+    c_b = _make_candidate(symbol="BTCUSDT", price=200.0)
+    c_c = _make_candidate(symbol="ETHUSDT", price=300.0)
+    results = {
+        "SOLUSDT": [c_a],
+        "BTCUSDT": [c_b],
+        "ETHUSDT": [c_c],
+    }
+    kb = build_keyboard(results)
+    # Первые 3 строки — кнопки на символы, порядок: BTC, ETH, SOL
+    sym_cbs = [
+        row[0].callback_data
+        for row in kb.inline_keyboard[:3]
+        if row and row[0].callback_data.startswith("ls_add_sym|")
+    ]
+    assert sym_cbs == [
+        "ls_add_sym|BTCUSDT",
+        "ls_add_sym|ETHUSDT",
+        "ls_add_sym|SOLUSDT",
+    ]
 
 
 def test_build_full_keyboard_all_rows():

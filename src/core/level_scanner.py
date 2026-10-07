@@ -756,22 +756,47 @@ def format_full_list(
 
 def build_keyboard(results: dict[str, list[LevelCandidate]]) -> Any:
     """
-    Компактная клавиатура: по 1 лучшему уровню на символ (max score).
-    Плюс «📋 Все уровни», «🔄 Обновить», «🏠 Главное меню».
+    Компактная клавиатура:
+      - по одной кнопке на символ «➕ SYMBOL · N уровней» → добавить все
+        уровни этого символа,
+      - «➕ ➕ Добавить все уровни» → добавить все уровни всех символов,
+      - «📋 Все уровни текстом» → переключение на полный список с
+        индивидуальными кнопками,
+      - «🔄 Обновить» / «🏠 Главное меню».
+
+    Отдельные кнопки на каждый уровень — в build_full_keyboard
+    (показывается по кнопке «📋 Все уровни текстом»).
     """
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
     rows: list[list[InlineKeyboardButton]] = []
-    for sym, cands in results.items():
+
+    # Сортировка символов для предсказуемого порядка
+    for sym in sorted(results.keys()):
+        cands = results.get(sym) or []
         if not cands:
             continue
-        best = max(cands, key=lambda c: (c.score, c.touches_15m))
-        cb = _make_add_callback(best)
-        label = f"➕ {sym} {_round_price_for_callback(best.price)} {best.direction_for_alert}"
-        rows.append([InlineKeyboardButton(label, callback_data=cb)])
+        n = len(cands)
+        word = "уровень" if n == 1 else ("уровня" if 2 <= n <= 4 else "уровней")
+        label = f"➕ {sym} · {n} {word}"
+        rows.append([
+            InlineKeyboardButton(label, callback_data=f"ls_add_sym|{sym}"),
+        ])
 
     if rows:
-        rows.append([InlineKeyboardButton("📋 Все уровни", callback_data="ls_show_all")])
+        rows.append([
+            InlineKeyboardButton(
+                "➕ ➕ Добавить все уровни",
+                callback_data="ls_add_all",
+            ),
+        ])
+        rows.append([
+            InlineKeyboardButton(
+                "📋 Все уровни текстом",
+                callback_data="ls_show_all",
+            ),
+        ])
+
     rows.append([InlineKeyboardButton("🔄 Обновить", callback_data="ls_scan_now")])
     rows.append([InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")])
     return InlineKeyboardMarkup(rows)

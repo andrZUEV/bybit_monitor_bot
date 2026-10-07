@@ -861,6 +861,13 @@ class TelegramHandlers:
         elif data == "ls_show_compact":
             await self._show_level_scan_compact(query)
 
+        elif data == "ls_add_all":
+            await self._handle_level_scan_add_all(query)
+
+        elif data.startswith("ls_add_sym|"):
+            symbol = data.split("|", 1)[1]
+            await self._handle_level_scan_add_symbol(query, symbol)
+
         elif data.startswith("ls_add|"):
             await self._handle_level_scan_add(query, data)
 
@@ -1390,19 +1397,14 @@ class TelegramHandlers:
             return
 
         # Ищем существующий уровень с такой ценой и направлением
-        for asset in self.alerts_manager.get_all_alerts():
-            if asset.symbol != symbol:
-                continue
-            for rule in asset.alerts:
-                if (
-                    abs(rule.price - price) < 1e-5
-                    and rule.direction == direction
-                ):
-                    await query.answer(
-                        f"⚠️ Уже есть: {symbol} @ {price} {direction}",
-                        show_alert=True,
-                    )
-                    return
+        if self._level_exists(symbol, price, direction):
+            await query.answer()
+            await query.message.reply_text(
+                f"⚠️ Уже есть: <b>{symbol}</b> @ "
+                f"<code>{price}</code> {direction}",
+                parse_mode="HTML",
+            )
+            return
 
         # Ищем note из кэша, если есть
         note = "сканер уровней"
@@ -1549,3 +1551,97 @@ class TelegramHandlers:
         except Exception as e:
             logger.error(f"Ошибка генерации файла экспорта: {e}", exc_info=True)
             return None
+
+    async def _handle_level_scan_add_symbol(self, query, symbol: str):
+        """
+        Добавляет ВСЕ уровни одного символа из последнего скана.
+        Дедуп: пропускает уже существующие (symbol, price, direction).
+        """
+        cached = self._level_scan_cache.get("data")
+        if not cached:
+            await query.answer("Сначала запустите скан", show_alert=True)
+            return
+        _, _, results, _, _, _ = cached
+        cands = results.get(symbol) or []
+        if not cands:
+            await query.answer(f"Нет уровней для {symbol}", show_alert=True)
+            return
+
+        added = 0
+        skipped = 0
+        category = self._category_provider(symbol)
+
+        for c in cands:
+            if self._level_exists(symbol, c.price, c.direction_for_alert):
+                skipped += 1
+                continue
+            price = float(_round_price_for_callback(c.price))
+            success, _ = self.alerts_manager.add_alert(
+                symbol, price, c.direction_for_alert, category,
+                c.note or "сканер уровней",
+            )
+            if success:
+                added += 1
+            else:
+                skipped += 1
+
+        await query.answer()
+        text = f"✅ <b>{symbol}</b>: добавлено {added}"
+        if skipped:
+            text += f", пропущено {skipped}"
+        await query.message.reply_text(text, parse_mode="HTML")
+
+    async def _handle_level_scan_add_all(self, query):
+        """
+        Добавляет ВСЕ уровни всех символов из последнего скана.
+        """
+        cached = self._level_scan_cache.get("data")
+        if not cached:
+            await query.answer("Сначала запустите скан", show_alert=True)
+            return
+        _, _, results, _, _, _ = cached
+        if not results:
+            await query.answer("Нет уровней", show_alert=True)
+            return
+
+        added = 0
+        skipped = 0
+        for sym, cands in results.items():
+            category = self._category_provider(sym)
+            for c in cands:
+                if self._level_exists(sym, c.price, c.direction_for_alert):
+                    skipped += 1
+                    continue
+                price = float(_round_price_for_callback(c.price))
+                success, _ = self.alerts_manager.add_alert(
+                    sym, price, c.direction_for_alert, category,
+                    c.note or "сканер уровней",
+                )
+                if success:
+                    added += 1
+                else:
+                    skipped += 1
+
+        await query.answer()
+        text = f"✅ Добавлено уровней: <b>{added}</b>"
+        if skipped:
+            text += f"\n⚠️ Пропущено (уже есть): <b>{skipped}</b>"
+        await query.message.reply_text(text, parse_mode="HTML")
+
+    def _level_exists(
+        self, symbol: str, price: float, direction: str,
+    ) -> bool:
+        """
+        Проверяет, есть ли уже такой (symbol, price, direction) в alerts.json.
+        Сравнение по относительному допуску — устойчиво к float-неточностям
+        и к округлению цены в callback_data.
+        """
+        for asset in self.alerts_manager.get_all_alerts():
+            if asset.symbol != symbol:
+                continue
+            for rule in asset.alerts:
+                if rule.direction != direction:
+                    continue
+                if abs(rule.price - price) / max(abs(price), 1e-9) < 1e-5:
+                    return True
+        return False    
