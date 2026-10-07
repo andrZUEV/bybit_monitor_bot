@@ -462,6 +462,134 @@
 - `_handle_export_alert` делает REST-запросы в event loop — вынести в `asyncio.to_thread`.
 
 ---
+## Этап 5 — Рефакторинг и буфер алертов (ЗАКРЫТ)
+
+**Дата:** 2026-10-07
+**Цель:** закрыть накопившийся техдолг + собрать статистику для анализа
+качества оценки.
+
+### Этап 5.1 — Быстрые фиксы
+
+**5.1.0 — Дивергенции при `direction='any'`**
+- `src/core/divergence.py`: `find_divergences` принимает `'any'`,
+  возвращает до 2 (bullish + bearish), сортирует по свежести.
+- `src/core/analyzer.py`: `pattern` / `wick` / `rsi` / `close_third` /
+  `structure` корректно обрабатывают `'any'`; risk не считается при `'any'`.
+- Новая секция `🧭 Дивергенции` в отчёте алерта.
+
+**5.1.1 — Парсер массового добавления**
+- Новый `src/parsers/mass_add.py`: `parse_mass_add`, `ParsedLine`,
+  `SkippedLine`.
+- Формат: `SYMBOL PRICE DIR [ОПИСАНИЕ]`, где DIR ∈
+  `{up, down, any, long, short, вверх, вниз}`.
+- Нормализация тикера (`sol` → `SOLUSDT`, `BTCUSDC` → skip).
+- `setup_note` = всё после direction, включая `|`, `Вход:`, `Стоп:`.
+- Ведущие разделители (`|`, `-`, `—`, `:`) срезаются.
+- Интеграция в `handlers.py`: отчёт «Добавлено N, Пропущено M».
+
+**5.1.2 — Порог `alert_min_score`**
+- Новый `src/core/settings.py`: `RuntimeSettings` (JSON, синглтон,
+  `init_settings` / `get_settings` / `set_settings`).
+- Кнопка `⚙️ Настройки` в боте, пресеты `[-inf, -5, 0, 3]` + свой.
+- Гейт в `Monitor._check_price_cross` — score ниже порога → пропуск.
+
+**5.1.3 — Флаг `send_invalid_alerts`**
+- `RuntimeSettings.send_invalid_alerts: bool = True`.
+- Кнопка `⛔ Hard-filter алерты: ВКЛ/ВЫКЛ` в боте.
+- Гейт 2 в `Monitor._check_price_cross` — hard_filter-алерты режутся
+  отдельно от score-гейта.
+
+**5.1.4 — Единый `html_escape`**
+- Новый `src/utils/formatting.py`: `html_escape` (`&` экранируется
+  первым).
+- `analyzer.py` использует общий хелпер.
+- `handlers.py::_show_list` экранирует `&` в `setup_note` (был баг).
+
+### Этап 5.2 — Буфер последних алертов
+
+**5.2.1 — `AlertRecord` + `AlertHistory`**
+- Новый `src/core/alert_history.py`: `AlertRecord` (40+ полей),
+  `AlertHistory` (JSONL, RLock, атомарная запись через
+  `mkstemp + os.replace`).
+- `build_alert_record` — фабрика из `evaluation` + метаданных.
+- Синглтон: `init_alert_history` / `get_alert_history` /
+  `set_alert_history`.
+
+**5.2.2 — Расширение `evaluate_alert`**
+- 17 новых полей в возвращаемом dict: `candle`, `prev_candle`,
+  `candle_ts`, `body_size`, `upper_wick`, `lower_wick`,
+  `body_to_range_ratio`, `close_position`, `close_pos_ratio`,
+  `pattern_score`, `pattern_reason`, `volume_score`, `rsi_score`,
+  `wick_beyond_level`, `close_in_correct_third`, `htf_against`,
+  `atr_value`.
+
+**5.2.3 — Интеграция в Monitor**
+- `Monitor` принимает `alert_history`, пишет `AlertRecord` на каждом
+  алерте (включая пропущенные).
+- `Config.ALERT_HISTORY_FILE`, `RuntimeSettings.alert_history_depth`.
+- Пишем ВСЕ алерты, включая `verdict="❌ None"`.
+
+**5.2.4 — UI истории**
+- Кнопка `📜 История алертов` в главном меню.
+- `/settings` → `📜 Глубина истории` (пресеты + свой).
+- Колбэки `settings_history_depth`, `set_depth|N`, `set_depth_custom`.
+- Выгрузка CSV, очистка с подтверждением.
+
+**5.2.6 — `strategy_pass`**
+- Пишем все алерты в историю, включая слабые сигналы.
+- `AlertRecord.strategy_pass = (verdict != "❌ None") AND
+  (score >= alert_min_score) AND
+  (hard_filter is None or send_invalid_alerts)`.
+- `skip_reason`: `verdict_none` / `score_below` /
+  `hard_filter_disabled`.
+
+**5.2.7 — Дедупликация**
+- `AlertHistory._add_to_memory`: ключ
+  `(symbol, level, direction, candle_ts)`.
+- `old.was_sent=True` НЕ перезаписывается `new.was_sent=False`.
+- Rewrite JSONL при каждом append (файл маленький, после дедупа).
+- `alert_history_depth = 10000` по умолчанию.
+
+**5.2.8 — `worn_level` и `htf_against`**
+- `analyzer.py`: `worn_level > 5` → `hard_filter = "worn_level"`
+  (убран штраф `-1.5` — устранён двойной учёт).
+- `analyzer.py`: `htf_against` — убран штраф `-1.5`, оставлен только
+  `hard_filter = "trend_conflict"` в `risk` (устранён двойной штраф).
+- `AlertRecord.worn_level` берётся из `evaluation`, не хардкод.
+- `format_reason_ru("worn_level")` → «Уровень изношен».
+
+### Итоги Этапа 5
+
+- **~350+ тестов**, все зелёные, `ruff check` чистый.
+- **Новые модули:** `src/parsers/`, `src/core/settings.py`,
+  `src/core/alert_history.py`, `src/utils/formatting.py`.
+- **Расширенные:** `analyzer`, `monitor`, `handlers`, `keyboards`,
+  `config`, `main.py`.
+- **Собрана статистика:** после дедупликации ~120 записей в сутки
+  (было 300+ дублей/сутки).
+- **Анализ выявил:**
+  - Отслеживаемые уровни были почти все worn (`touches=46-72`) —
+    пользователь удалил их, будут добавлены свежие.
+  - `bullish_engulfing` — 1–2 срабатывания, формально корректные,
+    но `upper_wick > lower_wick` — **отложено на 5.4** (после набора
+    данных).
+  - `weak_min = 3.5` — возможно, завышен, но **не трогали**.
+  - `worn_level` hard block — **сделано** в 5.2.8.
+  - Двойной штраф `htf_against` — **устранён** в 5.2.8.
+
+### Техдолг (перенесён в Этап 6+)
+
+- `bullish_engulfing` — усилить условия (строгое поглощение + проверка
+  тени).
+- `weak_min = 3.5` — пересмотреть после данных.
+- Уровни как **зоны** (`price_low`/`price_high`) вместо точек.
+- CSV `utf-8-sig` для Excel (мелко, 1 строка).
+- `get_candle_volume_ratio` в `_check_price_cross` — лишний REST-запрос
+  (можно из `klines_15m`).
+- Гонка при параллельных `add_alert` в `AlertsManager` (см. Этап 3).
+- `_handle_export_alert` — 3 REST-запроса в event loop, вынести в
+  `asyncio.to_thread`.
+- `skip_note_keyboard` — не подключена.
 
 ## Версия
 
@@ -469,4 +597,5 @@
 - **v1.1** — Этап 2 закрыт (2026-09-29). WebSocket, `resolve_symbol`, кнопки алерта не затирают сообщение.
 - **v1.2** — Этап 3 закрыт (2026-09-29). README, ~52 pytest-теста, CI (ruff + pytest).
 - **v1.3** — Этап 4 закрыт (2026-09-30). risk / divergence / levels, hard filters, ~119 тестов.
-- Следующий этап — 5 (зоны уровней, SEND_INVALID_ALERTS, техдолг).
+- **v1.4** — Этап 5 закрыт (2026-10-07). Быстрые фиксы 5.1 + буфер алертов 5.2. ~350+ тестов.
+- **Следующий этап — 6** (сканер уровней).

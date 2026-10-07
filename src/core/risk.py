@@ -282,6 +282,7 @@ REASON_RU: dict[str, str] = {
     "insufficient_runway": "Запас хода до TP1 < 2×ATR",  # ← оставить
     "size_below_min":      "Размер позиции < минимального лота",
     "":                    "",
+    "worn_level": "Уровень изношен (много касаний)",
 }
 
 SOFT_REASON_RU: dict[str, str] = {
