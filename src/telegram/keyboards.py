@@ -103,9 +103,11 @@ def skip_note_keyboard() -> InlineKeyboardMarkup:
 # ==================== НАСТРОЙКИ ====================
 
 def main_menu_keyboard_with_settings(threshold_describe: str) -> InlineKeyboardMarkup:
+    """Главное меню с актуальным значением порога."""
     keyboard = [
         [InlineKeyboardButton("➕ Добавить алерт", callback_data="menu_add")],
         [InlineKeyboardButton("🔍 Скринер", callback_data="menu_screener")],
+        [InlineKeyboardButton("📊 Сканер уровней", callback_data="ls_menu")],
         [InlineKeyboardButton("💰 Текущие цены", callback_data="menu_prices")],
         [InlineKeyboardButton("📋 Мои алерты", callback_data="menu_list")],
         [InlineKeyboardButton("📊 Выгрузить данные", callback_data="menu_export")],
@@ -281,4 +283,81 @@ def alert_history_clear_confirm_keyboard() -> InlineKeyboardMarkup:
             callback_data="history_menu",
         )],
     ]
+    return InlineKeyboardMarkup(keyboard)
+
+# ==================== СКАНЕР УРОВНЕЙ (Этап 6) ====================
+
+def level_scan_menu_keyboard(
+    enabled: bool,
+    hours_utc: str,
+    min_score: float,
+) -> InlineKeyboardMarkup:
+    """Меню сканера уровней (открывается из главного меню)."""
+    status = "ВКЛ" if enabled else "ВЫКЛ"
+    keyboard = [
+        [InlineKeyboardButton(
+            "▶️ Запустить сейчас",
+            callback_data="ls_scan_now",
+        )],
+        [InlineKeyboardButton(
+            f"🔔 Автоскан: {status} ({hours_utc} UTC)",
+            callback_data="ls_toggle_enabled",
+        )],
+        [InlineKeyboardButton(
+            f"🎯 Порог score: ≥ {min_score:g}",
+            callback_data="ls_set_min_score",
+        )],
+        [InlineKeyboardButton(
+            f"⏰ Часы UTC: {hours_utc}",
+            callback_data="ls_set_hours",
+        )],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def level_scan_hours_presets_keyboard(
+    presets: tuple[str, ...],
+    current: str,
+) -> InlineKeyboardMarkup:
+    """Пресеты часов UTC для сканера."""
+    keyboard: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for p in presets:
+        label = p
+        if p == current:
+            label = f"✅ {p}"
+        row.append(InlineKeyboardButton(
+            label, callback_data=f"ls_set_hours|{p}",
+        ))
+    for i in range(0, len(row), 2):
+        keyboard.append(row[i:i + 2])
+    keyboard.append([
+        InlineKeyboardButton("✏️ Свои часы", callback_data="ls_set_hours_custom"),
+    ])
+    keyboard.append([
+        InlineKeyboardButton("◀ Назад", callback_data="ls_menu"),
+    ])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def level_scan_score_presets_keyboard(
+    presets: tuple[float, ...],
+    current: float,
+) -> InlineKeyboardMarkup:
+    """Пресеты порога score для сканера."""
+    keyboard: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for p in presets:
+        label = f"≥ {p:g}"
+        if abs(p - current) < 1e-9:
+            label = f"✅ {label}"
+        row.append(InlineKeyboardButton(
+            label, callback_data=f"ls_set_min_score|{p}",
+        ))
+    for i in range(0, len(row), 2):
+        keyboard.append(row[i:i + 2])
+    keyboard.append([
+        InlineKeyboardButton("◀ Назад", callback_data="ls_menu"),
+    ])
     return InlineKeyboardMarkup(keyboard)

@@ -29,15 +29,13 @@ def setup_logging():
     log_format = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
     date_format = "%Y-%m-%d %H:%M:%S"
     
-    # Создаём папку logs если её нет
     Config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
     
     handlers = [
         logging.StreamHandler(sys.stdout),
-        # Ротация: 5 МБ × 3 backup = максимум 20 МБ логов
         RotatingFileHandler(
             filename=Config.LOGS_DIR / "bot.log",
-            maxBytes=5 * 1024 * 1024,  # 5 МБ
+            maxBytes=5 * 1024 * 1024,
             backupCount=3,
             encoding="utf-8"
         )
@@ -50,7 +48,6 @@ def setup_logging():
         handlers=handlers
     )
     
-    # Снижаем уровень логирования для шумных библиотек
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
@@ -61,10 +58,7 @@ def setup_logging():
 # ==================== ГЛАВНАЯ ЛОГИКА ====================
 
 def on_alert_callback(event: AlertEvent):
-    """
-    Callback-функция, которую вызывает Monitor при срабатывании алерта.
-    Отправляет сообщение через Telegram бота.
-    """
+    """Callback-функция, которую вызывает Monitor при срабатывании алерта."""
     logger = logging.getLogger(__name__)
     logger.info(f"🔔 Сработал алерт: {event.symbol} ({event.event_type})")
     
@@ -84,9 +78,9 @@ def main():
     if not ok:
         logger.error(f"❌ Ошибка конфигурации: {msg}")
         logger.error(
-        "Проверьте файл .env и убедитесь, что заполнены "
-        "TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID"
-    )
+            "Проверьте файл .env и убедитесь, что заполнены "
+            "TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID"
+        )
         sys.exit(1)
     
     logger.info("✅ Конфигурация загружена успешно")
@@ -96,7 +90,7 @@ def main():
     total_alerts = sum(len(asset.alerts) for asset in alerts_manager.get_all_alerts())
     logger.info(f"📋 Загружено алертов: {total_alerts}")
 
-    # 2.1. Инициализация runtime-настроек (порог score)
+    # 2.1. Инициализация runtime-настроек
     runtime_settings = init_settings(Config.SETTINGS_FILE)
     logger.info(
         f"⚙️ Runtime-настройки: порог score = "
@@ -125,7 +119,7 @@ def main():
     # 3.1. Очистка старых файлов экспорта
     exporter = DataExporter(telegram_bot.bybit_client)
     exporter.cleanup_old_files(max_age_hours=1)
-    logger.info(" Старые файлы экспорта удалены")
+    logger.info("🧹 Старые файлы экспорта удалены")
 
     # 4. Инициализация Монитора
     monitor = Monitor(
@@ -139,7 +133,7 @@ def main():
         candle_periods=Config.CANDLE_PERIODS,
         candle_volume_multiplier=Config.CANDLE_VOLUME_MULTIPLIER,
         alert_cooldown_minutes=Config.ALERT_COOLDOWN_MINUTES,
-        use_websocket=Config.USE_WEBSOCKET,   # <-- добавить
+        use_websocket=Config.USE_WEBSOCKET,
         settings=runtime_settings,
         alert_history=alert_history,
     )
@@ -148,16 +142,46 @@ def main():
     # 5. Запуск компонентов
     logger.info("🔄 Запуск фоновых служб...")
     
-    # Запускаем бота в фоновом потоке (неблокирующий)
     telegram_bot.start_async()
     time.sleep(1)
-    
-    # Отправляем приветственное сообщение в Telegram С КНОПКАМИ
+
+    # 5.1. Инжектим sender в хендлеры (для планировщика)
+    telegram_bot.handlers.set_telegram_sender(telegram_bot.send_alert)
+
+    # 5.2. Планировщик сканера уровней
+    from src.core.level_scan_scheduler import LevelScanScheduler
+
+    def _symbols_provider() -> list[str]:
+        assets = alerts_manager.get_all_alerts()
+        seen: set[str] = set()
+        result: list[str] = []
+        for a in assets:
+            if a.symbol not in seen:
+                seen.add(a.symbol)
+                result.append(a.symbol)
+        return result
+
+    def _category_provider(symbol: str) -> str:
+        for a in alerts_manager.get_all_alerts():
+            if a.symbol == symbol:
+                return a.category or "linear"
+        return "linear"
+
+    level_scheduler = LevelScanScheduler(
+        settings=runtime_settings,
+        symbols_provider=_symbols_provider,
+        category_provider=_category_provider,
+        scan_runner=telegram_bot.handlers.run_scheduled_level_scan,
+    )
+    level_scheduler.start()
+    logger.info("✅ Планировщик сканера уровней запущен")
+
+    # Отправляем приветственное сообщение
     from src.telegram.keyboards import main_menu_keyboard_with_settings
     
     welcome_msg = (
         "✅ <b>Bybit Monitor Bot запущен!</b>\n\n"
-        f" Отслеживается алертов: <b>{total_alerts}</b>\n"
+        f"📋 Отслеживается алертов: <b>{total_alerts}</b>\n"
         f"⏱ Интервал опроса: <b>{Config.POLL_INTERVAL} сек</b>\n"
         f"📈 Порог объема: <b>{Config.VOLUME_THRESHOLD}%</b>\n"
         f"⏳ Кулдаун алертов: <b>{Config.ALERT_COOLDOWN_MINUTES} мин</b>\n\n"
@@ -169,24 +193,24 @@ def main():
         reply_markup=main_menu_keyboard_with_settings(runtime_settings.describe()),
     )
 
-    # 6. Основной цикл (БЛОКИРУЮЩИЙ) — Monitor в основном потоке
+    # 6. Основной цикл (БЛОКИРУЮЩИЙ)
     try:
         logger.info("▶️ Мониторинг начался. Нажмите Ctrl+C для остановки.")
-        monitor.start()  # <-- ЭТО БЛОКИРУЮЩИЙ ВЫЗОВ
+        monitor.start()
         
     except KeyboardInterrupt:
         logger.info("🛑 Получен сигнал остановки (Ctrl+C)")
     except Exception as e:
         logger.critical(f"💥 Критическая ошибка: {e}", exc_info=True)
     finally:
-        # 7. Корректное завершение работы
         logger.info("🧹 Завершение работы и очистка ресурсов...")
+        try:
+            level_scheduler.stop()
+        except Exception:
+            pass
         monitor.stop()
         telegram_bot.stop()
-        
-        # Даём потокам время на корректное завершение
         time.sleep(1.5)
-        
         logger.info("✅ Приложение успешно остановлено. До встречи!")
         print("=" * 60)
 

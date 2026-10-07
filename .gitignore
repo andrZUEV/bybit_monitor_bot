@@ -49,3 +49,4 @@ tmp_*.json
 tmp_*.json.bak
 data/tmp/
 data/
+diag_scan.py

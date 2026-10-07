@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_MIN_SCORE: float = float("-inf")
+
+
 def _default_send_invalid() -> bool:
     """
     Дефолт для send_invalid_alerts при первом запуске.
@@ -46,6 +48,11 @@ class RuntimeSettings:
     alert_min_score: float = DEFAULT_MIN_SCORE
     send_invalid_alerts: bool = True
     alert_history_depth: int = 10000
+
+    # --- Level scanner (Этап 6) ---
+    level_scan_enabled: bool = True
+    level_scan_hours_utc: str = "6,18"      # часы UTC через запятую
+    level_scan_min_score: float = 5.0       # порог score для попадания в сводку
 
     # Путь хранилища (не сериализуется в JSON)
     _path: Path | None = None
@@ -76,10 +83,24 @@ class RuntimeSettings:
         depth_raw = data.get("alert_history_depth", 10000)
         depth = cls._parse_depth(depth_raw, default=10000)
 
+        # Level scanner
+        ls_enabled = cls._parse_bool(
+            data.get("level_scan_enabled", True), default=True,
+        )
+        ls_hours = cls._parse_hours_utc(
+            data.get("level_scan_hours_utc", "6,18"), default="6,18",
+        )
+        ls_min_score = cls._parse_score(
+            data.get("level_scan_min_score", 5.0), default=5.0,
+        )
+
         s = cls(
             alert_min_score=min_score,
             send_invalid_alerts=send_invalid,
             alert_history_depth=depth,
+            level_scan_enabled=ls_enabled,
+            level_scan_hours_utc=ls_hours,
+            level_scan_min_score=ls_min_score,
         )
         s._path = p
         return s
@@ -95,6 +116,9 @@ class RuntimeSettings:
             s = cls(
                 alert_min_score=DEFAULT_MIN_SCORE,
                 send_invalid_alerts=_default_send_invalid(),
+                level_scan_enabled=True,
+                level_scan_hours_utc="6,18",
+                level_scan_min_score=5.0,
             )
             s._path = p
             s.save()
@@ -110,18 +134,10 @@ class RuntimeSettings:
             s = cls(
                 alert_min_score=DEFAULT_MIN_SCORE,
                 send_invalid_alerts=_default_send_invalid(),
+                level_scan_enabled=True,
+                level_scan_hours_utc="6,18",
+                level_scan_min_score=5.0,
             )
-            s._path = p
-            return s
-
-        try:
-            return cls.load(p)
-        except Exception as e:
-            logger.warning(
-                f"⚠️ settings.json битый или нечитаемый ({e}), "
-                f"использую дефолты"
-            )
-            s = cls(alert_min_score=DEFAULT_MIN_SCORE)
             s._path = p
             return s
 
@@ -140,6 +156,9 @@ class RuntimeSettings:
                 "alert_min_score": self.alert_min_score,
                 "send_invalid_alerts": self.send_invalid_alerts,
                 "alert_history_depth": self.alert_history_depth,
+                "level_scan_enabled": self.level_scan_enabled,
+                "level_scan_hours_utc": self.level_scan_hours_utc,
+                "level_scan_min_score": self.level_scan_min_score,
             }
 
             fd, tmp_name = tempfile.mkstemp(
@@ -198,9 +217,39 @@ class RuntimeSettings:
     def describe_invalid(self) -> str:
         """Короткое описание флага hard-filter-алертов."""
         return "ВКЛ" if self.send_invalid_alerts else "ВЫКЛ"
-    
+
     def describe_depth(self) -> str:
         return str(self.alert_history_depth)
+
+    def describe_level_scan(self) -> str:
+        """Короткое описание статуса сканера уровней."""
+        if not self.level_scan_enabled:
+            return "ВЫКЛ"
+        return f"ВКЛ ({self.level_scan_hours_utc} UTC)"
+
+    def describe_level_scan_score(self) -> str:
+        return f"≥ {self.level_scan_min_score:g}"
+
+    def parsed_hours_utc(self) -> list[int]:
+        """
+        Парсит level_scan_hours_utc в список int-часов 0..23.
+        На любой ошибке — [6, 18].
+        """
+        raw = self.level_scan_hours_utc or ""
+        hours: list[int] = []
+        for chunk in raw.split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            try:
+                h = int(chunk)
+            except ValueError:
+                continue
+            if 0 <= h <= 23 and h not in hours:
+                hours.append(h)
+        if not hours:
+            return [6, 18]
+        return sorted(hours)
 
     @staticmethod
     def _parse_bool(raw: object, *, default: bool) -> bool:
@@ -228,6 +277,34 @@ class RuntimeSettings:
         except (TypeError, ValueError):
             return default
         return max(100, min(100_000, v))
+
+    @staticmethod
+    def _parse_hours_utc(raw: object, *, default: str = "6,18") -> str:
+        """
+        Принимает '6,18', '6, 18', '6', '0,6,12,18'.
+        Возвращает нормализованную строку с уникальными часами 0..23.
+        На любой ошибке — default.
+        """
+        if raw is None:
+            return default
+        s = str(raw).strip()
+        if not s:
+            return default
+        hours: list[int] = []
+        for chunk in s.split(","):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            try:
+                h = int(chunk)
+            except ValueError:
+                continue
+            if 0 <= h <= 23 and h not in hours:
+                hours.append(h)
+        if not hours:
+            return default
+        return ",".join(str(h) for h in sorted(hours))
+
 
 # ==================== СИНГЛТОН ====================
 #

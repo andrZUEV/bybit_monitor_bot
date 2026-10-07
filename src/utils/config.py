@@ -80,6 +80,16 @@ class Config:
 
     HISTORY_DEPTH_PRESETS: tuple[int, ...] = (1000, 5000, 10000, 50000)
 
+    # Пресеты часов UTC для сканера уровней.
+    LEVEL_SCAN_HOURS_PRESETS: tuple[str, ...] = (
+        "6,18", "8", "0,12", "6,12,18",
+    )
+
+    # Пресеты порога score для сканера уровней.
+    LEVEL_SCAN_SCORE_PRESETS: tuple[float, ...] = (
+        3.0, 5.0, 6.0, 7.0,
+    )
+
     # Слать ли hard-filter-алерты (⛔ СДЕЛКА НЕ ПО СТРАТЕГИИ).
     # True — шлём всё (включая hard_filter), False — только валидные сделки.
     # По умолчанию True — обратная совместимость.
@@ -150,6 +160,3 @@ class Config:
 Config.DATA_DIR.mkdir(parents=True, exist_ok=True)
 Config.EXPORTS_DIR.mkdir(parents=True, exist_ok=True)
 Config.LOGS_DIR.mkdir(parents=True, exist_ok=True)
-
-
-    

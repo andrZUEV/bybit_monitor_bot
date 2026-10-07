@@ -11,6 +11,7 @@
 import asyncio
 import csv
 import logging
+import math
 import os
 import time
 from datetime import datetime
@@ -19,6 +20,7 @@ from typing import Any
 from telegram.ext import ContextTypes
 
 from src.api.bybit_client import BybitClient
+from src.core import level_scanner
 from src.core.alert_history import get_alert_history
 from src.core.alerts import AlertsManager
 from src.core.settings import get_settings
@@ -47,6 +49,12 @@ class TelegramHandlers:
         self._screener_cache_ttl = 120
         self._last_screener_results: list = []
 
+        # Кэш сканера уровней (Этап 6): {"data": (...), "ts": float}
+        self._level_scan_cache: dict[str, Any] = {}
+        self._level_scan_cache_ttl = 30 * 60   # 30 минут
+        self._last_level_scan_results: dict[str, Any] = {}
+        self._telegram_send: Any = None
+
     # ==================== ВСПОМОГАТЕЛЬНЫЕ ====================
 
     def _is_allowed(self, update: Update) -> bool:
@@ -54,7 +62,7 @@ class TelegramHandlers:
 
     def _reset_state(self, chat_id: int) -> None:
         self.user_state.pop(chat_id, None)
-    
+
     def _main_menu_kb(self):
         """Главное меню с актуальным значением порога."""
         s = get_settings()
@@ -89,7 +97,7 @@ class TelegramHandlers:
             parse_mode="HTML",
             reply_markup=self._main_menu_kb(),
         )
-    
+
     async def settings_cmd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_allowed(update):
             return
@@ -213,8 +221,8 @@ class TelegramHandlers:
         # --- Настройки: ввод своего порога ---
         if step == "waiting_custom_score":
             from src.core.settings import RuntimeSettings as _RS
-            new_score = _RS._parse_score(text.strip(), default=None)  # type: ignore[arg-type]
-            if new_score is None:
+            new_score = _RS._parse_score(text.strip(), default=float("nan"))
+            if math.isnan(new_score):
                 await update.message.reply_text(
                     "❌ Не понял число. Введите, например, "
                     "<code>-2.5</code> или <code>all</code>.",
@@ -231,10 +239,10 @@ class TelegramHandlers:
                 f"✅ Порог установлен: <b>{s.describe()}</b>",
                 parse_mode="HTML",
                 reply_markup=keyboards.settings_menu_keyboard(
-                    s.describe(), s.describe_invalid(),s.describe_depth(),
+                    s.describe(), s.describe_invalid(), s.describe_depth(),
                 ),
             )
-            return     
+            return
 
         # --- Настройки: ввод своей глубины истории ---
         if step == "waiting_custom_depth":
@@ -262,7 +270,30 @@ class TelegramHandlers:
                     s.describe(), s.describe_invalid(), s.describe_depth(),
                 ),
             )
-            return   
+            return
+
+        # --- Сканер уровней: ввод своих часов UTC ---
+        if step == "waiting_level_scan_hours":
+            s = get_settings()
+            normalized = s._parse_hours_utc(text.strip())
+            if not normalized:
+                await update.message.reply_text(
+                    "❌ Не понял часы. Введите, например, "
+                    "<code>6,18</code> (числа 0-23 через запятую).",
+                    parse_mode="HTML",
+                    reply_markup=keyboards.cancel_keyboard(),
+                )
+                return
+            s.level_scan_hours_utc = normalized
+            s.save()
+            self._reset_state(chat_id)
+            logger.info(f"⏰ Сканер уровней: часы {s.level_scan_hours_utc}")
+            await update.message.reply_text(
+                f"✅ Часы сканера: <b>{s.level_scan_hours_utc}</b> UTC",
+                parse_mode="HTML",
+                reply_markup=self._main_menu_kb(),
+            )
+            return
 
         # --- Массовое добавление (текстом, без диалога) ---
         if "\n" in text.strip():
@@ -637,7 +668,7 @@ class TelegramHandlers:
                 f"Hard-filter алерты: <b>{s.describe_invalid()}</b>",
                 parse_mode="HTML",
                 reply_markup=keyboards.settings_menu_keyboard(
-                    s.describe(), s.describe_invalid(),s.describe_depth(),
+                    s.describe(), s.describe_invalid(), s.describe_depth(),
                 ),
             )
 
@@ -656,8 +687,8 @@ class TelegramHandlers:
         elif data.startswith("set_score|"):
             raw = data.split("|", 1)[1]
             from src.core.settings import RuntimeSettings as _RS
-            new_score = _RS._parse_score(raw, default=None)  # type: ignore[arg-type]
-            if new_score is None:
+            new_score = _RS._parse_score(raw, default=float("nan"))
+            if math.isnan(new_score):
                 await query.answer("Ошибка парсинга порога", show_alert=True)
                 return
             s = get_settings()
@@ -668,7 +699,7 @@ class TelegramHandlers:
                 f"✅ Порог установлен: <b>{s.describe()}</b>",
                 parse_mode="HTML",
                 reply_markup=keyboards.settings_menu_keyboard(
-                    s.describe(), s.describe_invalid(),s.describe_depth(),
+                    s.describe(), s.describe_invalid(), s.describe_depth(),
                 ),
             )
 
@@ -684,7 +715,7 @@ class TelegramHandlers:
                 parse_mode="HTML",
                 reply_markup=keyboards.settings_custom_score_keyboard(),
             )
-        
+
         # ========== Настройки: hard-filter алерты ==========
         elif data == "settings_toggle_invalid":
             s = get_settings()
@@ -714,7 +745,7 @@ class TelegramHandlers:
                 f"✅ Hard-filter алерты: <b>{s.describe_invalid()}</b>",
                 parse_mode="HTML",
                 reply_markup=keyboards.settings_menu_keyboard(
-                    s.describe(), s.describe_invalid(),s.describe_depth(),
+                    s.describe(), s.describe_invalid(), s.describe_depth(),
                 ),
             )
 
@@ -815,6 +846,85 @@ class TelegramHandlers:
             await query.edit_message_text(
                 "✅ История очищена",
                 reply_markup=keyboards.alert_history_menu_keyboard(0),
+            )
+
+        # ========== Сканер уровней (Этап 6) ==========
+        elif data == "ls_menu":
+            await self._show_level_scan_menu(query)
+
+        elif data == "ls_scan_now":
+            await self._run_level_scan(query, force_refresh=False)
+
+        elif data == "ls_show_all":
+            await self._show_level_scan_all(query)
+
+        elif data == "ls_show_compact":
+            await self._show_level_scan_compact(query)
+
+        elif data.startswith("ls_add|"):
+            await self._handle_level_scan_add(query, data)
+
+        elif data == "ls_toggle_enabled":
+            s = get_settings()
+            s.level_scan_enabled = not s.level_scan_enabled
+            s.save()
+            logger.info(f"🔔 Сканер уровней: {s.describe_level_scan()}")
+            await self._show_level_scan_menu(query)
+
+        elif data == "ls_set_min_score":
+            s = get_settings()
+            await query.edit_message_text(
+                f"🎯 <b>Порог score для сканера</b>\n\n"
+                f"Текущий: <b>≥ {s.level_scan_min_score:g}</b>\n\n"
+                f"Уровни с меньшим score в сводку не попадают.",
+                parse_mode="HTML",
+                reply_markup=keyboards.level_scan_score_presets_keyboard(
+                    Config.LEVEL_SCAN_SCORE_PRESETS, s.level_scan_min_score,
+                ),
+            )
+
+        elif data.startswith("ls_set_min_score|"):
+            raw = data.split("|", 1)[1]
+            from src.core.settings import RuntimeSettings as _RS
+            new_score = _RS._parse_score(raw, default=float("nan"))
+            if math.isnan(new_score):
+                await query.answer("Ошибка парсинга", show_alert=True)
+                return
+            s = get_settings()
+            s.level_scan_min_score = new_score
+            s.save()
+            logger.info(f"🎯 Сканер уровней: порог {s.describe_level_scan_score()}")
+            await self._show_level_scan_menu(query)
+
+        elif data == "ls_set_hours":
+            s = get_settings()
+            await query.edit_message_text(
+                f"⏰ <b>Часы автоскана (UTC)</b>\n\n"
+                f"Текущие: <b>{s.level_scan_hours_utc}</b>\n\n"
+                f"Скан запускается в указанные часы. "
+                f"Можно задать свои через запятую, например <code>6,18</code>.",
+                parse_mode="HTML",
+                reply_markup=keyboards.level_scan_hours_presets_keyboard(
+                    Config.LEVEL_SCAN_HOURS_PRESETS, s.level_scan_hours_utc,
+                ),
+            )
+
+        elif data.startswith("ls_set_hours|"):
+            raw = data.split("|", 1)[1]
+            s = get_settings()
+            s.level_scan_hours_utc = s._parse_hours_utc(raw)
+            s.save()
+            logger.info(f"⏰ Сканер уровней: часы {s.level_scan_hours_utc}")
+            await self._show_level_scan_menu(query)
+
+        elif data == "ls_set_hours_custom":
+            self.user_state[chat_id] = {"step": "waiting_level_scan_hours"}
+            await query.edit_message_text(
+                "✏️ <b>Свои часы UTC</b>\n\n"
+                "Введите часы через запятую (0-23).\n"
+                "Например: <code>6,18</code> или <code>0,8,16</code>",
+                parse_mode="HTML",
+                reply_markup=keyboards.cancel_keyboard(),
             )
 
         # ========== Необработанный callback ==========
@@ -1127,6 +1237,250 @@ class TelegramHandlers:
         cache_mark = "📥 Из кэша" if from_cache else "🔄 Свежие данные"
         text += f"<i>{cache_mark} ({int(time.time() - fetch_time)}с назад)</i>"
         return text
+
+    # ==================== СКАНЕР УРОВНЕЙ ====================
+
+    def _collect_symbols_and_categories(self) -> tuple[list[str], dict[str, str]]:
+        """
+        Собирает уникальные символы из alerts.json и категории для них.
+        Категория берётся из первого алерта символа, fallback — 'linear'.
+        """
+        assets = self.alerts_manager.get_all_alerts()
+        categories: dict[str, str] = {}
+        for a in assets:
+            if a.symbol not in categories:
+                categories[a.symbol] = a.category or "linear"
+        return list(categories.keys()), categories
+
+    def _category_provider(self, symbol: str) -> str:
+        """Callback для планировщика: category по символу (из alerts.json)."""
+        for a in self.alerts_manager.get_all_alerts():
+            if a.symbol == symbol:
+                return a.category or "linear"
+        return "linear"
+
+    async def _show_level_scan_menu(self, query):
+        s = get_settings()
+        await query.edit_message_text(
+            f"📊 <b>Сканер уровней</b>\n\n"
+            f"Находит сильные уровни на 15m/4H/1D и предлагает добавить "
+            f"их в алерты. Не влияет на текущие алерты.\n\n"
+            f"🔔 Автоскан: <b>{s.describe_level_scan()}</b>\n"
+            f"🎯 Порог score: <b>{s.describe_level_scan_score()}</b>\n\n"
+            f"Запуск вручную или по расписанию.",
+            parse_mode="HTML",
+            reply_markup=keyboards.level_scan_menu_keyboard(
+                s.level_scan_enabled,
+                s.level_scan_hours_utc,
+                s.level_scan_min_score,
+            ),
+        )
+
+    async def _run_level_scan(self, query, force_refresh: bool = False):
+        """
+        Запускает скан (или отдаёт из кэша, если < 30 мин).
+        force_refresh=True — игнорировать кэш (кнопка «Обновить»).
+        """
+        now = time.time()
+        cached = self._level_scan_cache.get("data")
+        cached_ts = self._level_scan_cache.get("ts", 0.0)
+        cache_age = now - cached_ts
+
+        if (
+            not force_refresh
+            and cached is not None
+            and cache_age < self._level_scan_cache_ttl
+        ):
+            logger.info(
+                f"📥 Сканер уровней: из кэша (возраст {cache_age:.0f}с)"
+            )
+            summary, full, results, prices, compact_kb, full_kb = cached
+            await query.edit_message_text(
+                summary, parse_mode="HTML", reply_markup=compact_kb,
+            )
+            return
+
+        await query.edit_message_text(
+            "⏳ <b>Сканирую уровни...</b>\n"
+            "<i>Это займёт 1–2 минуты, не закрывайте чат.</i>",
+            parse_mode="HTML",
+        )
+
+        symbols, _ = self._collect_symbols_and_categories()
+        if not symbols:
+            await query.edit_message_text(
+                "📋 Нет отслеживаемых активов — нечего сканировать.",
+                reply_markup=self._main_menu_kb(),
+            )
+            return
+
+        s = get_settings()
+        try:
+            (
+                summary, full, results, prices, compact_kb, full_kb
+            ) = await asyncio.to_thread(
+                level_scanner.scan_and_format,
+                symbols,
+                self.bybit_client,
+                category_provider=self._category_provider,
+                min_score=s.level_scan_min_score,
+            )
+        except Exception as e:
+            logger.error(f"❌ Ошибка скана уровней: {e}", exc_info=True)
+            await query.edit_message_text(
+                f"❌ Ошибка скана: <code>{html_escape(str(e))[:200]}</code>",
+                parse_mode="HTML",
+                reply_markup=self._main_menu_kb(),
+            )
+            return
+
+        self._level_scan_cache = {
+            "data": (summary, full, results, prices, compact_kb, full_kb),
+            "ts": now,
+        }
+        self._last_level_scan_results = results
+
+        await query.edit_message_text(
+            summary, parse_mode="HTML", reply_markup=compact_kb,
+        )
+
+    async def _show_level_scan_all(self, query):
+        """Показывает полный список уровней (все, не топ-1)."""
+        cached = self._level_scan_cache.get("data")
+        if not cached:
+            await query.answer("Сначала запустите скан", show_alert=True)
+            return
+        _, full, results, prices, compact_kb, full_kb = cached
+        if not results:
+            await query.answer("Нет уровней", show_alert=True)
+            return
+        await query.edit_message_text(
+            full, parse_mode="HTML", reply_markup=full_kb,
+        )
+
+    async def _show_level_scan_compact(self, query):
+        """Возврат к компактному виду."""
+        cached = self._level_scan_cache.get("data")
+        if not cached:
+            await query.answer("Сначала запустите скан", show_alert=True)
+            return
+        summary, full, results, prices, compact_kb, full_kb = cached
+        await query.edit_message_text(
+            summary, parse_mode="HTML", reply_markup=compact_kb,
+        )
+
+    async def _handle_level_scan_add(self, query, data: str):
+        """
+        Добавление уровня из сканера в alerts.json.
+
+        Формат callback: ls_add|SYMBOL|price|direction
+
+        Дедуп: если точно такой же (symbol, price, direction) уже есть —
+        отвечаем «уже есть», add_alert НЕ зовём.
+        """
+        parts = data.split("|")
+        if len(parts) != 4:
+            await query.answer("Ошибка формата", show_alert=True)
+            return
+        _, symbol, price_str, direction = parts
+        try:
+            price = float(price_str)
+        except ValueError:
+            await query.answer("Ошибка цены", show_alert=True)
+            return
+
+        # Ищем существующий уровень с такой ценой и направлением
+        for asset in self.alerts_manager.get_all_alerts():
+            if asset.symbol != symbol:
+                continue
+            for rule in asset.alerts:
+                if (
+                    abs(rule.price - price) < 1e-5
+                    and rule.direction == direction
+                ):
+                    await query.answer(
+                        f"⚠️ Уже есть: {symbol} @ {price} {direction}",
+                        show_alert=True,
+                    )
+                    return
+
+        # Ищем note из кэша, если есть
+        note = "сканер уровней"
+        cached = self._level_scan_cache.get("data")
+        if cached:
+            _, _, results, _, _, _ = cached
+            for c in results.get(symbol, []):
+                if (
+                    abs(c.price - price) / max(c.price, 1e-9) < 0.001
+                    and c.direction_for_alert == direction
+                ):
+                    note = c.note or note
+                    break
+
+        category = self._category_provider(symbol)
+        success, replaced = self.alerts_manager.add_alert(
+            symbol, price, direction, category, note,
+        )
+        if success:
+            verb = "🔄 Обновлён" if replaced else "✅ Добавлен"
+            await query.answer(
+                f"{verb}: {symbol} @ {price} {direction}", show_alert=False,
+            )
+        else:
+            await query.answer(
+                "❌ Не удалось сохранить", show_alert=True,
+            )
+
+    # ==================== СИНХРОННЫЙ ЗАПУСК ДЛЯ ПЛАНИРОВЩИКА ====================
+
+    def set_telegram_sender(self, sender) -> None:
+        """Устанавливает функцию отправки в Telegram (обычно bot.send_alert)."""
+        self._telegram_send = sender
+
+    def run_scheduled_level_scan(
+        self,
+        symbols: list[str],
+        category_provider,
+        min_score: float,
+    ) -> None:
+        """
+        Синхронная точка входа для планировщика (вызывается из фонового
+        потока LevelScanScheduler). Внутри — синхронный сканер и
+        синхронный HTTP-запрос к Telegram. Никаких await'ов.
+        """
+        results = level_scanner.scan_all(
+            symbols, self.bybit_client,
+            category_provider=category_provider,
+            min_score=min_score,
+        )
+        prices: dict[str, float] = {}
+        for sym in results.keys():
+            cat = category_provider(sym)
+            ticker = self.bybit_client.get_ticker(sym, cat)
+            if ticker:
+                prices[sym] = ticker.price
+
+        summary = level_scanner.format_summary(results, prices)
+        compact_kb = level_scanner.build_keyboard(results)
+        full = level_scanner.format_full_list(results, prices)
+        full_kb = level_scanner.build_full_keyboard(results)
+
+        self._level_scan_cache = {
+            "data": (summary, full, results, prices, compact_kb, full_kb),
+            "ts": time.time(),
+        }
+        self._last_level_scan_results = results
+
+        if self._telegram_send is None:
+            logger.warning("⚠️ Telegram sender не задан, скан не отправлен")
+            return
+        if not results:
+            self._telegram_send(
+                "📊 <b>СВОДКА УРОВНЕЙ</b>\n\nПусто — фильтры ничего не пропустили.",
+                compact_kb,
+            )
+            return
+        self._telegram_send(summary, compact_kb)
 
     # ==================== ЭКСПОРТ В CSV ====================
 

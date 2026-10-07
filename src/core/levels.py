@@ -203,21 +203,15 @@ def is_mirror_level(
     """
     Зеркальный ли уровень.
 
-    Окно делится ровно пополам по порядку Bybit (свежие в начале):
-      fresh_half  = candles[:n//2]
-      old_half    = candles[n//2:]
+    Уровень считается зеркальным, если цена подходила к нему
+    с ОБЕИХ сторон: сверху (close > zone_high) и снизу
+    (close < zone_low), причём в каждой стороне минимум
+    `mirror_min_side_touches` касаний.
 
-    Для каждой половины считаем:
-      - подходы СВЕРХУ: бары, где зона задевается, а close > zone_high
-        (цена была выше, спустилась — тестирует как поддержку);
-      - подходы СНИЗУ: бары, где зона задевается, а close < zone_low
-        (цена была ниже, поднялась — тестирует как сопротивление).
-
-    Уровень зеркальный, если:
-      - в свежей половине доминирует один тип подходов,
-      - в старой половине — другой тип,
-      - в каждой половине минимум `mirror_min_side_touches` касаний
-        в доминирующей стороне.
+    Это смягчённая версия: раньше требовалось, чтобы в свежей
+    половине преобладал один тип подходов, а в старой — другой
+    (переворот доминанты). На 66 днях 4H и даже 200 днях 1D
+    такое почти не встречается, поэтому зеркал не находилось.
     """
     n = len(candles)
     if n < 4:
@@ -226,6 +220,22 @@ def is_mirror_level(
     tol = level_price * tolerance_pct
     zone_low = level_price - tol
     zone_high = level_price + tol
+
+    from_above = 0
+    from_below = 0
+    for c in candles:
+        # Свеча «касалась» зоны
+        if c["high"] < zone_low or c["low"] > zone_high:
+            continue
+        if c["close"] > zone_high:
+            from_above += 1
+        elif c["close"] < zone_low:
+            from_below += 1
+
+    return (
+        from_above >= mirror_min_side_touches
+        and from_below >= mirror_min_side_touches
+    )
 
     def count_sides(slc: list[dict[str, float]]) -> tuple[int, int]:
         """(подходы_сверху, подходы_снизу) для среза свечей."""

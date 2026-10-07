@@ -70,6 +70,8 @@ def _make_message_update(text: str, chat_id: int = 12345) -> SimpleNamespace:
     return SimpleNamespace(effective_chat=chat, message=message)
 
 
+
+
 # ==================== settings_menu ====================
 
 class TestSettingsMenu:

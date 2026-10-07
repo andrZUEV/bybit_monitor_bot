@@ -50,11 +50,13 @@ class TestSaveLoad:
         s.save()
 
         data = json.loads(p.read_text(encoding="utf-8"))
-        assert data == {
-            "alert_min_score": 1.5,
-            "send_invalid_alerts": True,
-            "alert_history_depth": 10000,
-        }
+        # Без строгого ==, чтобы новые поля не роняли тест.
+        assert data["alert_min_score"] == 1.5
+        assert data["send_invalid_alerts"] is True
+        assert data["alert_history_depth"] == 10000
+        assert data["level_scan_enabled"] is True
+        assert data["level_scan_hours_utc"] == "6,18"
+        assert data["level_scan_min_score"] == 5.0
 
     def test_save_without_path_is_noop(self, tmp_path: Path):
         s = RuntimeSettings(alert_min_score=2.0)
