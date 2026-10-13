@@ -13,9 +13,12 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 
 from src.core.alert_history import init_alert_history
+from src.core.reversal_diary import init_reversal_diary
+from src.core.reversal_diary_scheduler import ReversalDiaryScheduler
 from src.core.alerts import AlertsManager
 from src.core.monitor import AlertEvent, Monitor
-from src.core.settings import init_settings
+from src.core.settings import get_settings, init_settings
+from src.core.level_scan_scheduler import LevelScanScheduler
 from src.telegram.bot import TelegramBot
 from src.utils.config import Config
 from src.utils.data_exporter import DataExporter
@@ -106,6 +109,16 @@ def main():
         f"📜 История алертов: {alert_history.count()} записей, "
         f"глубина {alert_history.max_records}"
     )
+    # 2.3. Дневник разворотов
+    reversal_diary = None
+    if Config.REVERSAL_DIARY_ENABLED:
+        reversal_diary = init_reversal_diary(Config.REVERSAL_DIARY_FILE)
+        logger.info(
+            f"📔 Дневник разворотов: {reversal_diary.count()} записей "
+            f"(pending: {reversal_diary.count_by_status('pending')})"
+        )
+    else:
+        logger.info("📔 Дневник разворотов ВЫКЛЮЧЕН")
 
     # 3. Инициализация Telegram бота
     global telegram_bot
@@ -136,6 +149,7 @@ def main():
         use_websocket=Config.USE_WEBSOCKET,
         settings=runtime_settings,
         alert_history=alert_history,
+        reversal_diary=reversal_diary,
     )
     logger.info("✅ Монитор инициализирован")
 
@@ -148,8 +162,22 @@ def main():
     # 5.1. Инжектим sender в хендлеры (для планировщика)
     telegram_bot.handlers.set_telegram_sender(telegram_bot.send_alert)
 
+
+    def _atr_1h_provider(client, symbol: str, category: str) -> float | None:
+        """
+        Возвращает ATR(14) по 1H-klines. Кэшируется через client (TTL 1 час).
+        """
+        from src.utils.indicators import calculate_atr
+
+        klines = client.get_klines_cached(symbol, category, "60", 100)
+        if not klines or len(klines) < 15:
+            return None
+        highs = [float(k[2]) for k in klines]
+        lows = [float(k[3]) for k in klines]
+        closes = [float(k[4]) for k in klines]
+        return calculate_atr(highs, lows, closes, period=14)
+
     # 5.2. Планировщик сканера уровней
-    from src.core.level_scan_scheduler import LevelScanScheduler
 
     def _symbols_provider() -> list[str]:
         assets = alerts_manager.get_all_alerts()
@@ -192,7 +220,23 @@ def main():
         welcome_msg,
         reply_markup=main_menu_keyboard_with_settings(runtime_settings.describe()),
     )
-
+    # 5.3. Планировщик дневника разворотов
+    reversal_scheduler: ReversalDiaryScheduler | None = None
+    if reversal_diary is not None:
+        reversal_scheduler = ReversalDiaryScheduler(
+            diary=reversal_diary,
+            klines_provider=lambda sym, cat: telegram_bot.bybit_client.get_klines_cached(
+                sym, cat, "15", 200,
+            ),
+            atr_1h_provider=lambda sym, cat: _atr_1h_provider(
+                telegram_bot.bybit_client, sym, cat,
+            ),
+            category_provider=_category_provider,
+            interval_min=Config.REVERSAL_RESOLVE_INTERVAL_MIN,
+            enabled_provider=lambda: get_settings().reversal_diary_enabled,
+        )
+        reversal_scheduler.start()
+        logger.info("✅ Планировщик дневника разворотов запущен")
     # 6. Основной цикл (БЛОКИРУЮЩИЙ)
     try:
         logger.info("▶️ Мониторинг начался. Нажмите Ctrl+C для остановки.")
@@ -206,6 +250,12 @@ def main():
         logger.info("🧹 Завершение работы и очистка ресурсов...")
         try:
             level_scheduler.stop()
+        except Exception:
+            pass
+        
+        try:
+            if reversal_scheduler is not None:
+                reversal_scheduler.stop()
         except Exception:
             pass
         monitor.stop()

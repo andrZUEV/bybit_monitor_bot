@@ -36,6 +36,12 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from src.api.bybit_client import BybitClient, TickerData
 from src.core.alert_history import AlertHistory, build_alert_record
+from src.core.reversal_diary import (
+    ReversalDiary,
+    ReversalResolution,
+    build_record_key,
+    build_setup_key,
+)
 from src.core.alerts import AlertsManager, Asset
 from src.core.analyzer import evaluate_alert, format_alert_message
 from src.core.cooldown import CooldownManager
@@ -115,6 +121,7 @@ class Monitor:
         use_websocket: bool = True,
         settings: RuntimeSettings | None = None,
         alert_history: AlertHistory | None = None,
+        reversal_diary: ReversalDiary | None = None,
     ):
         self.alerts_manager = alerts_manager
         self.on_alert = on_alert_callback
@@ -123,6 +130,12 @@ class Monitor:
             path=Config.ALERT_HISTORY_FILE,
             max_records=self.settings.alert_history_depth,
         )
+        # Дневник разворотов (Этап 7). Если не передан — создаём из Config.
+        # Может быть None, если фича выключена.
+        self.reversal_diary: ReversalDiary | None = None
+        if Config.REVERSAL_DIARY_ENABLED:
+            from src.core.reversal_diary import get_reversal_diary
+            self.reversal_diary = get_reversal_diary()
         self.poll_interval = poll_interval
         self.volume_threshold = volume_threshold  # legacy, не используется
         self.volume_cooldown = volume_cooldown    # legacy, не используется
@@ -331,7 +344,15 @@ class Monitor:
                         )
                         state.triggered_alerts[alert_key] = True
                         continue
-
+                    # ----- Reversal diary: записываем pending -----
+                    self._maybe_create_diary_pending(
+                        evaluation=evaluation,
+                        symbol=asset.symbol,
+                        level=target,
+                        direction=direction,
+                        candle_ts=evaluation.get("candle_ts", 0),
+                        hard_filter=hard_filter,
+                    )
                     # --- Отправка ---
                     message = format_alert_message(
                         symbol=asset.symbol,
@@ -387,6 +408,78 @@ class Monitor:
                 # Ставим флаг, чтобы не дёргать API повторно, пока цена не отойдёт
                 state.triggered_alerts[alert_key] = True
 
+    # ==================== REVERSAL DIARY ====================
+
+    def _maybe_create_diary_pending(
+        self,
+        *,
+        evaluation: dict,
+        symbol: str,
+        level: float,
+        direction: str,
+        candle_ts: int,
+        hard_filter: str | None,
+    ) -> None:
+        """
+        Создаёт pending-запись в дневнике разворотов.
+
+        Условия «не писать»:
+          - дневник выключен / отсутствует,
+          - direction == 'any' (нет направления — нет разворота),
+          - hard_filter is not None и REVERSAL_RECORD_WEAK=False,
+          - candle_ts == 0 (нет данных о свече),
+          - atr_value is None или <= 0 (нечем мерить движение).
+        """
+        if self.reversal_diary is None:
+            return
+
+        if direction not in ("up", "down"):
+            return
+
+        if hard_filter is not None and not Config.REVERSAL_RECORD_WEAK:
+            return
+
+        if candle_ts <= 0:
+            return
+
+        atr_1h = evaluation.get("atr_value")
+        if atr_1h is None or atr_1h <= 0:
+            return
+
+        # Собираем сетап-ключ из полей evaluation.
+        setup_key = build_setup_key(
+            pattern=evaluation.get("pattern"),
+            volume_ratio=float(evaluation.get("vol_ratio", 0.0)),
+            wick_beyond=bool(evaluation.get("wick_beyond_level", False)),
+            htf_trend=str(evaluation.get("htf_trend", "side")),
+            htf_against=bool(evaluation.get("htf_against", False)),
+            rsi=(
+                float(evaluation["rsi"])
+                if evaluation.get("rsi") is not None else None
+            ),
+            direction=direction,
+        )
+
+        record_key = build_record_key(symbol, level, direction, candle_ts)
+        res = ReversalResolution(
+            record_key=record_key,
+            symbol=symbol,
+            direction=direction,
+            setup_key=setup_key,
+            status="pending",
+            created_at=time.time(),
+        )
+
+        try:
+            self.reversal_diary.create_pending(res)
+            logger.debug(
+                f"📔 Diary pending: {record_key} | {setup_key}"
+            )
+        except Exception as e:
+            logger.error(
+                f"⚠️ Не удалось записать diary pending: {e}",
+                exc_info=True,
+            )
     # ==================== КЭШ KLINES 1H/1D ====================
 
     def _get_klines_cached(

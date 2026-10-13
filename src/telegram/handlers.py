@@ -17,6 +17,7 @@ import time
 from datetime import datetime
 from typing import Any
 
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from src.api.bybit_client import BybitClient
@@ -401,6 +402,7 @@ class TelegramHandlers:
                 await update.message.reply_document(
                     document=InputFile(f, filename=os.path.basename(filepath)),
                     caption=caption,
+                    reply_markup=keyboards.cancel_keyboard(),
                 )
             os.remove(filepath)
         else:
@@ -504,7 +506,8 @@ class TelegramHandlers:
         # ========== Меню ==========
         if data == "menu_main":
             self._reset_state(chat_id)
-            await query.edit_message_text(
+            await safe_edit_to_main_menu(
+                query,
                 "🏠 <b>Главное меню</b>",
                 parse_mode="HTML",
                 reply_markup=self._main_menu_kb(),
@@ -1646,3 +1649,58 @@ class TelegramHandlers:
                 if abs(rule.price - price) / max(abs(price), 1e-9) < 1e-5:
                     return True
         return False    
+
+async def safe_edit_to_main_menu(
+    query,
+    text: str,
+    parse_mode: str | None = None,
+    reply_markup=None,
+) -> None:
+    """
+    Безопасно редактирует сообщение в главное меню.
+    Работает и для текстовых сообщений, и для подписей к документам/фото.
+    Если отредактировать нельзя (например, сообщение слишком старое
+    или это стикер/видео) — удаляет и шлёт новое.
+    """
+    # 1) Текст
+    try:
+        await query.edit_message_text(
+            text=text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+        )
+        return
+    except BadRequest as e:
+        msg = str(e).lower()
+        if "no text in the message" not in msg and "there is no text" not in msg:
+            # это не наш кейс — если это "message is not modified", глотаем,
+            # иначе пробрасываем
+            if "message is not modified" in msg:
+                return
+            # пробуем caption ниже только для известных случаев
+            if "no caption" not in msg and "media" not in msg:
+                # всё равно попробуем caption — но если и там ошибка, уйдёт наружу
+                pass
+
+    # 2) Caption (документ/фото)
+    try:
+        await query.edit_message_caption(
+            caption=text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+        )
+        return
+    except BadRequest as e:
+        msg = str(e).lower()
+        if "message is not modified" in msg:
+            return
+        # 3) Fallback: удалить и отправить заново
+        try:
+            await query.message.delete()
+        except BadRequest:
+            pass
+        await query.message.chat.send_message(
+            text=text,
+            parse_mode=parse_mode,
+            reply_markup=reply_markup,
+        )

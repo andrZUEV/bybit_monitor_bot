@@ -3,6 +3,7 @@ Inline-клавиатуры для Telegram бота.
 """
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
@@ -361,3 +362,4 @@ def level_scan_score_presets_keyboard(
         InlineKeyboardButton("◀ Назад", callback_data="ls_menu"),
     ])
     return InlineKeyboardMarkup(keyboard)
+
