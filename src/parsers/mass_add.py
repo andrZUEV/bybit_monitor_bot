@@ -134,58 +134,184 @@ def _clean_note(note: str) -> str | None:
         s = s[1:].lstrip()
     return s if s else None
 
-# ==================== ПАРСИНГ ОДНОЙ СТРОКИ ====================
+# ==================== ГРУППИРОВКА СТРОК В БЛОКИ ====================
 
-def _parse_line(raw: str, line_no: int) -> tuple[ParsedLine | None, str]:
+def _is_continuation(raw: str) -> bool:
     """
-    Возвращает (ParsedLine | None, reason).
+    True, если строка — продолжение предыдущего блока (не новая тикерная строка).
 
-    reason используется только когда ParsedLine is None:
-        "формат" | "не USDT" | "цена" | "direction"
-    Пустая строка → (None, "") — вызывающий сам решит, что это разделитель.
+    Признаки continuation:
+      - начинается с пробела/таба (отступ);
+      - начинается с известного префикса трейд-плана:
+        "Entry:", "SL:", "TP1:", "вход:", "стоп:", "тейк:", "|", "-", "—", "•" и т.п.
+
+    Иначе — новая тикерная строка (или мусор, который парсер попробует
+    разобрать отдельным блоком).
     """
-    stripped = raw.strip()
-    if not stripped:
-        return None, ""  # разделитель
+    if not raw:
+        return False
+    if raw[0] in (" ", "\t"):
+        return True
 
-    # maxsplit=3, чтобы setup_note остался одним куском
+    lowered = raw.lstrip().lower()
+    prefixes = (
+        "entry:", "sl:", "tp1:", "tp2:", "tp3:",
+        "stop:", "stop-loss:", "take:", "take-profit:",
+        "вход:", "стоп:", "тейк:", "цель:", "отмена:",
+        "|", "-", "—", "–", "•", "*", "→",
+    )
+    return any(lowered.startswith(p) for p in prefixes)
+
+
+def _looks_like_ticker_start(raw: str) -> bool:
+    """
+    True, если строка похожа на начало тикерного алерта: первое слово —
+    буквенно-цифровое (тикер), второе — число (цена).
+
+    Это НЕ проверка валидности алерта — только «похоже ли на тикерную».
+    Финальный вердикт (valid / skipped) выносит _parse_block.
+    """
+    parts = raw.strip().split(maxsplit=2)
+    if len(parts) < 2:
+        return False
+    if not re.match(r"^[A-Za-z][A-Za-z0-9]{1,14}$", parts[0]):
+        return False
+    try:
+        float(parts[1].replace(",", "."))
+    except ValueError:
+        return False
+    return True
+
+
+def _group_into_blocks(text: str) -> list[list[tuple[int, str]]]:
+    """
+    Группирует строки в блоки.
+
+    Логика:
+      - пустые строки — игнорируются;
+      - строка-продолжение (отступ / "Entry:" / "|" и т.п.) при
+        наличии текущего блока — добавляется в текущий блок;
+      - строка, похожая на тикерную, — начинает новый блок;
+      - всё прочее ДО первого валидного тикера — тихо игнорируется (Q2=A);
+      - всё прочее ПОСЛЕ первого тикера — становится новым блоком
+        (парсер сам решит, valid это или skipped).
+
+    Возвращает list[list[(line_no, raw_line)]], блоки в порядке появления.
+    """
+    blocks: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] = []
+    seen_ticker = False   # уже встречали ли тикерную строку
+
+    for i, raw in enumerate(text.splitlines(), start=1):
+        if not raw.strip():
+            continue
+
+        # Continuation — только если есть к чему продолжать.
+        if current and _is_continuation(raw):
+            current.append((i, raw))
+            continue
+
+        # Новая тикерная строка — начинает блок.
+        if _looks_like_ticker_start(raw):
+            if current:
+                blocks.append(current)
+            current = [(i, raw)]
+            seen_ticker = True
+            continue
+
+        # Не тикерная, не continuation.
+        if not seen_ticker:
+            # Ещё не было ни одного тикера — тихо игнорируем (Q2=A).
+            continue
+
+        # Уже видели тикер ранее — это «новый блок», парсер решит,
+        # что с ним делать (скорее всего skipped).
+        if current:
+            blocks.append(current)
+        current = [(i, raw)]
+
+    if current:
+        blocks.append(current)
+    return blocks
+
+
+def _parse_block(
+    block: list[tuple[int, str]],
+) -> tuple[ParsedLine | None, SkippedLine | None]:
+    """
+    Парсит блок строк как один алерт.
+
+    Первая строка блока — SYMBOL PRICE DIR [NOTE].
+    Последующие строки — продолжение setup_note (склеиваются через \\n).
+
+    Возвращает:
+      (ParsedLine, None)  — успех.
+      (None, SkippedLine) — ошибка в первой строке блока.
+    """
+    line_no_first, first_raw = block[0]
+
+    stripped = first_raw.strip()
     parts = stripped.split(maxsplit=3)
     if len(parts) < 3:
-        return None, "формат"
+        return None, SkippedLine(
+            line_no=line_no_first, raw=first_raw, reason="формат",
+        )
 
     symbol_raw, price_raw, direction_raw = parts[0], parts[1], parts[2]
 
     symbol = normalize_symbol(symbol_raw)
     if symbol is None:
-        return None, "не USDT"
+        return None, SkippedLine(
+            line_no=line_no_first, raw=first_raw, reason="не USDT",
+        )
 
     try:
         price = float(price_raw.replace(",", "."))
     except ValueError:
-        return None, "цена"
+        return None, SkippedLine(
+            line_no=line_no_first, raw=first_raw, reason="цена",
+        )
     if price <= 0:
-        return None, "цена"
+        return None, SkippedLine(
+            line_no=line_no_first, raw=first_raw, reason="цена",
+        )
 
     direction = normalize_direction(direction_raw)
     if direction is None:
-        return None, "direction"
+        return None, SkippedLine(
+            line_no=line_no_first, raw=first_raw, reason="direction",
+        )
 
-    if len(parts) == 4:
-        setup_note = _clean_note(parts[3])
-    else:
-        setup_note = None
+    # --- Сборка setup_note ---
+    # Часть 1: остаток первой строки после DIR.
+    first_note_raw = parts[3] if len(parts) == 4 else ""
+    first_note_clean = _clean_note(first_note_raw) if first_note_raw else None
+
+    # Часть 2: continuation-строки блока (без пустых, strip по краям).
+    continuation_lines: list[str] = []
+    for _, raw_line in block[1:]:
+        s = raw_line.strip()
+        if s:
+            continuation_lines.append(s)
+
+    note_parts: list[str] = []
+    if first_note_clean:
+        note_parts.append(first_note_clean)
+    note_parts.extend(continuation_lines)
+
+    setup_note: str | None = "\n".join(note_parts) if note_parts else None
 
     return (
         ParsedLine(
-            raw=raw,
-            line_no=line_no,
+            raw=first_raw,
+            line_no=line_no_first,
             symbol=symbol,
             price=price,
             direction_raw=direction_raw,
             direction=direction,
             setup_note=setup_note,
         ),
-        "",
+        None,
     )
 
 
@@ -195,16 +321,18 @@ def parse_mass_add(text: str) -> ParseResult:
     """
     Парсит многострочный (или однострочный) ввод.
 
-    Пустые строки — разделители, НЕ попадают в skipped.
-    Валидные строки — в valid (в порядке появления).
-    Невалидные — в skipped с короткой причиной.
+    Группирует строки в блоки: тикерная строка + последующие
+    continuation-строки (отступ / "Entry:", "|" и т.п.) образуют один
+    алерт. Continuation-строки склеиваются в setup_note через \\n.
+
+    Пустые строки — игнорируются. Строки, не ставшие частью ни одного
+    валидного алерта (битые тикерные строки) — попадают в skipped.
     """
     result = ParseResult()
-    for i, raw in enumerate(text.splitlines(), start=1):
-        parsed, reason = _parse_line(raw, i)
+    for block in _group_into_blocks(text):
+        parsed, skipped = _parse_block(block)
         if parsed is not None:
             result.valid.append(parsed)
-        elif reason:
-            result.skipped.append(SkippedLine(line_no=i, raw=raw, reason=reason))
-        # reason == "" → пустая строка-разделитель, молча пропускаем
+        elif skipped is not None:
+            result.skipped.append(skipped)
     return result

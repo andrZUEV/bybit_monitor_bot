@@ -60,32 +60,53 @@ class TestValidLines:
 # ==================== АЛИАСЫ НАПРАВЛЕНИЯ ====================
 
 class TestDirectionAliases:
-    @pytest.mark.parametrize("tok,expected", [
-        ("up", "up"),
-        ("UP", "up"),
-        ("long", "up"),
-        ("LONG", "up"),
-        ("вверх", "up"),
-        ("ВВЕРХ", "up"),
-        ("down", "down"),
-        ("DOWN", "down"),
-        ("short", "down"),
-        ("вниз", "down"),
-        ("any", "any"),
-        ("ANY", "any"),
+    @pytest.mark.parametrize("bad,expected_reason", [
+        # Строки, которые парсер ВИДИТ как «попытку алерта»
+        # (первое слово — тикер, второе — число) → skipped с причиной.
+        ("BTCUSDT 65000", "формат"),
+        ("BTCUSDT -5 up", "цена"),
+        ("BTCUSDT 0 up", "цена"),
+        ("BTCUSDT 65000 sideways", "direction"),
+        ("BTC 65000", "формат"),
+        ("BTCUSDC 65000 up", "не USDT"),
+        ("ETHBTC 65000 up", "не USDT"),
     ])
-    def test_alias_maps(self, tok, expected):
-        r = parse_mass_add(f"BTCUSDT 100 {tok}")
-        assert len(r.valid) == 1
-        assert r.valid[0].direction == expected
-        assert r.valid[0].direction_raw == tok
-
-    def test_unknown_direction_skipped(self):
-        r = parse_mass_add("BTCUSDT 100 sideways")
+    def test_bad_lines_go_to_skipped(self, bad, expected_reason):
+        r = parse_mass_add(bad)
         assert r.valid == []
         assert len(r.skipped) == 1
-        assert r.skipped[0].reason == "direction"
+        s = r.skipped[0]
+        assert s.line_no == 1
+        assert s.raw == bad
+        assert s.reason == expected_reason
 
+    @pytest.mark.parametrize("junk", [
+        "мусор",
+        "BTCUSDT",              # одно слово — не тикерная строка
+        "BTCUSDT abc up",       # второе слово не число
+        "B 65000 up",           # тикер слишком короткий для _looks_like_ticker_start
+        "какие-то мои комментарии",
+    ])
+    def test_junk_before_any_alert_is_ignored(self, junk):
+        """Строки, не похожие на тикерные, до первого алерта — игнор (Q2=A)."""
+        r = parse_mass_add(junk)
+        assert r.valid == []
+        assert r.skipped == []
+
+
+    def test_junk_after_first_alert_is_skipped(self):
+        """Мусор ПОСЛЕ первого алерта — skipped (парсер уже видел тикер)."""
+        text = "\n".join([
+            "BTCUSDT 82800 up",
+            "мусор",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 1
+        assert len(r.skipped) == 1
+        assert r.skipped[0].raw == "мусор"
+        # `_parse_block("мусор")` → parts=["мусор"] → len<3 → "формат".
+        # (Раньше я ждал "не USDT" — но проверка длины идёт первой.)
+        assert r.skipped[0].reason == "формат"
 
 # ==================== НОРМАЛИЗАЦИЯ ТИКЕРА ====================
 
@@ -137,17 +158,15 @@ class TestNormalizeDirection:
 
 class TestSkippedLines:
     @pytest.mark.parametrize("bad,expected_reason", [
-        ("мусор", "формат"),
-        ("BTCUSDT", "формат"),
+        # Строки, которые парсер ВИДИТ как «попытку алерта»
+        # (первое слово — тикер, второе — число) → skipped с причиной.
         ("BTCUSDT 65000", "формат"),
-        ("BTCUSDT abc up", "цена"),
         ("BTCUSDT -5 up", "цена"),
         ("BTCUSDT 0 up", "цена"),
         ("BTCUSDT 65000 sideways", "direction"),
-        ("BTC 65000", "формат"),       # нет direction → "формат" (len(parts)<3)
+        ("BTC 65000", "формат"),
         ("BTCUSDC 65000 up", "не USDT"),
         ("ETHBTC 65000 up", "не USDT"),
-        ("B 65000 up", "не USDT"),      # нормализация не проходит
     ])
     def test_bad_lines_go_to_skipped(self, bad, expected_reason):
         r = parse_mass_add(bad)
@@ -157,6 +176,22 @@ class TestSkippedLines:
         assert s.line_no == 1
         assert s.raw == bad
         assert s.reason == expected_reason
+
+    @pytest.mark.parametrize("junk", [
+        "мусор",
+        "BTCUSDT",              # одно слово — не тикерная строка
+        "BTCUSDT abc up",       # второе слово не число → не тикерная
+        "B 65000 up",           # тикер слишком короткий для _looks_like_ticker_start
+        "какие-то мои комментарии",
+    ])
+    def test_junk_before_any_alert_is_ignored(self, junk):
+        """
+        Строки, не похожие на тикерные, до первого алерта — игнор (Q2=A).
+        Они не попадают ни в valid, ни в skipped.
+        """
+        r = parse_mass_add(junk)
+        assert r.valid == []
+        assert r.skipped == []
 
 
 # ==================== ПУСТЫЕ СТРОКИ ====================
@@ -232,10 +267,11 @@ class TestSetupNote:
         r = parse_mass_add("BTCUSDT 65000 up | line1")
         assert r.valid[0].setup_note == "line1"
 
-    def test_note_does_not_contain_newlines(self):
-        """\n всегда режется splitlines() — setup_note не может содержать перевод строки."""
+    def test_single_line_note_has_no_newline(self):
+        """Одиночная строка — setup_note без \\n."""
         text = "BTCUSDT 65000 up line1"
         r = parse_mass_add(text)
+        assert r.valid[0].setup_note == "line1"
         assert "\n" not in (r.valid[0].setup_note or "")
 
     def test_leading_dash_is_stripped(self):
@@ -292,3 +328,299 @@ class TestRealUserExamples:
         for p in r.valid:
             assert p.setup_note is not None
             assert "|" in p.setup_note
+
+# ==================== МНОГОСТРОЧНЫЕ БЛОКИ ====================
+
+class TestMultilineBlocks:
+    """Continuation-строки склеиваются в setup_note предыдущего алерта."""
+
+    def test_two_alerts_with_continuation(self):
+        text = "\n".join([
+            "BTCUSDT 82800 up отбой",
+            "  Entry: 82800–82850 | SL: 82200 | TP1: 83600",
+            "",
+            "BTCUSDT 84300 down ретест",
+            "  Entry: 84300–84350 | SL: 84850 | TP1: 83600",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 2
+        assert r.skipped == []
+        assert r.valid[0].symbol == "BTCUSDT"
+        assert r.valid[0].direction == "up"
+        assert r.valid[0].setup_note == (
+            "отбой\nEntry: 82800–82850 | SL: 82200 | TP1: 83600"
+        )
+        assert r.valid[1].symbol == "BTCUSDT"
+        assert r.valid[1].direction == "down"
+        assert r.valid[1].setup_note == (
+            "ретест\nEntry: 84300–84350 | SL: 84850 | TP1: 83600"
+        )
+
+    def test_real_user_example_all_15(self):
+        """Реальный ввод: 15 алертов, каждый с Entry-строкой."""
+        text = "\n".join([
+            "BTCUSDT 82800 up отбой от 1H/4H поддержки (лонг по локальному тренду)",
+            "  Entry: 82800–82850 | SL: 82200 | TP1: 83600 | TP2: 84300 | отмена: 82000",
+            "",
+            "BTCUSDT 84300 down ретест 4H сопротивления",
+            "  Entry: 84300–84350 | SL: 84850 | TP1: 83600 | TP2: 82800 | отмена: 85000",
+            "",
+            "ETHUSDT 2500 up отбой от круглой поддержки",
+            "  Entry: 2498–2502 | SL: 2475 | TP1: 2550 | TP2: 2577 | отмена: 2465",
+            "",
+            "SOLUSDT 107.80 up отбой от поддержки (осторожно, 4H down)",
+            "  Entry: 107.70–107.90 | SL: 106.40 | TP1: 110.0 | TP2: 112.0 | отмена: 106.00",
+            "",
+            "AVAXUSDT 10.46 up отбой от поддержки",
+            "  Entry: 10.44–10.48 | SL: 10.28 | TP1: 10.75 | TP2: 11.00 | отмена: 10.20",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 5
+        assert r.skipped == []
+        assert [p.symbol for p in r.valid] == [
+            "BTCUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT",
+        ]
+        # Первый алерт — note из двух строк.
+        assert "отбой от 1H/4H поддержки" in r.valid[0].setup_note
+        assert "Entry: 82800–82850" in r.valid[0].setup_note
+        assert "\n" in r.valid[0].setup_note
+
+    def test_no_note_but_continuation(self):
+        """В тикерной строке нет note, но есть continuation-строка."""
+        text = "\n".join([
+            "BTCUSDT 82800 up",
+            "  Entry: 82800–82850 | SL: 82200",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 1
+        assert r.valid[0].setup_note == "Entry: 82800–82850 | SL: 82200"
+
+    def test_only_note_no_continuation(self):
+        """Тикерная строка с note, continuation отсутствует."""
+        text = "BTCUSDT 82800 up отбой от 1H поддержки"
+        r = parse_mass_add(text)
+        assert len(r.valid) == 1
+        assert r.valid[0].setup_note == "отбой от 1H поддержки"
+
+    def test_continuation_before_first_alert_ignored(self):
+        """Строки до первого тикера — тихо игнорируются (Q2=A)."""
+        text = "\n".join([
+            "какие-то мои комментарии",
+            "и ещё одна строка мусора",
+            "BTCUSDT 82800 up отбой",
+            "  Entry: 82800",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 1
+        assert r.skipped == []
+        assert r.valid[0].symbol == "BTCUSDT"
+        assert r.valid[0].setup_note == "отбой\nEntry: 82800"
+
+    def test_multiple_continuation_lines(self):
+        """Несколько continuation-строк — все в note через \n."""
+        text = "\n".join([
+            "BTCUSDT 82800 up отбой",
+            "  Entry: 82800–82850",
+            "  SL: 82200",
+            "  TP1: 83600",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 1
+        note = r.valid[0].setup_note
+        assert note == "отбой\nEntry: 82800–82850\nSL: 82200\nTP1: 83600"
+
+    def test_blank_lines_inside_block_ignored(self):
+        """Пустые строки внутри блока не ломают склейку."""
+        text = "\n".join([
+            "BTCUSDT 82800 up отбой",
+            "",
+            "  Entry: 82800",
+            "",
+            "  SL: 82200",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 1
+        assert r.valid[0].setup_note == "отбой\nEntry: 82800\nSL: 82200"
+
+    def test_broken_first_line_block_goes_to_skipped(self):
+        """Битый тикер — весь блок в skipped, continuation не выносится."""
+        text = "\n".join([
+            "RANDOMSTRING 82800 up отбой",
+            "  Entry: 82800",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 0
+        assert len(r.skipped) == 1
+        assert r.skipped[0].reason == "не USDT"
+        # Continuation-строка не должна превратиться в отдельный skipped.
+        assert r.skipped[0].line_no == 1
+
+    def test_single_line_mode_still_works(self):
+        """Однострочный ввод — не сломан."""
+        r = parse_mass_add("BTCUSDT 65000 up пробой")
+        assert len(r.valid) == 1
+        assert r.valid[0].setup_note == "пробой"
+        assert r.valid[0].line_no == 1
+
+    def test_multiline_returns_correct_line_numbers(self):
+        """line_no — это номер ТИКЕРНОЙ строки в исходном тексте."""
+        text = "\n".join([
+            "BTCUSDT 82800 up",           # line 1
+            "  Entry: 82800",             # line 2
+            "",                            # line 3
+            "ETHUSDT 2500 up",            # line 4
+            "  Entry: 2500",              # line 5
+        ])
+        r = parse_mass_add(text)
+        assert [p.line_no for p in r.valid] == [1, 4]
+
+# ==================== МНОГОСТРОЧНЫЕ БЛОКИ ====================
+
+class TestMultilineBlocks:
+    """Continuation-строки склеиваются в setup_note предыдущего алерта."""
+
+    def test_two_alerts_with_continuation_indent(self):
+        """Continuation с отступом (пробел в начале)."""
+        text = "\n".join([
+            "BTCUSDT 82800 up отбой",
+            "  Entry: 82800–82850 | SL: 82200 | TP1: 83600",
+            "",
+            "BTCUSDT 84300 down ретест",
+            "  Entry: 84300–84350 | SL: 84850 | TP1: 83600",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 2
+        assert r.skipped == []
+        assert r.valid[0].setup_note == (
+            "отбой\nEntry: 82800–82850 | SL: 82200 | TP1: 83600"
+        )
+        assert r.valid[1].setup_note == (
+            "ретест\nEntry: 84300–84350 | SL: 84850 | TP1: 83600"
+        )
+
+    def test_continuation_without_indent_prefix(self):
+        """Continuation без отступа, но с префиксом 'Entry:'."""
+        text = "\n".join([
+            "BTCUSDT 82800 up отбой",
+            "Entry: 82800 | SL: 82200",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 1
+        assert r.valid[0].setup_note == "отбой\nEntry: 82800 | SL: 82200"
+
+    def test_real_user_example_5_alerts(self):
+        """Реальный ввод: 5 алертов с Entry-строками."""
+        text = "\n".join([
+            "BTCUSDT 82800 up отбой от 1H/4H поддержки",
+            "  Entry: 82800–82850 | SL: 82200 | TP1: 83600",
+            "",
+            "BTCUSDT 84300 down ретест 4H сопротивления",
+            "  Entry: 84300–84350 | SL: 84850",
+            "",
+            "ETHUSDT 2500 up отбой",
+            "  Entry: 2498–2502",
+            "",
+            "SOLUSDT 107.80 up отбой",
+            "  Entry: 107.70–107.90",
+            "",
+            "AVAXUSDT 10.46 up отбой",
+            "  Entry: 10.44–10.48",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 5
+        assert r.skipped == []
+        assert [p.symbol for p in r.valid] == [
+            "BTCUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT", "AVAXUSDT",
+        ]
+        for p in r.valid:
+            assert "\n" in (p.setup_note or "")
+            assert "Entry:" in (p.setup_note or "")
+
+    def test_no_note_but_continuation(self):
+        """В тикерной строке нет note, но есть continuation-строка."""
+        text = "\n".join([
+            "BTCUSDT 82800 up",
+            "  Entry: 82800–82850",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 1
+        assert r.valid[0].setup_note == "Entry: 82800–82850"
+
+    def test_continuation_before_first_alert_ignored(self):
+        """Строки до первого тикера — игнор (Q2=A)."""
+        text = "\n".join([
+            "какие-то мои комментарии",
+            "  и ещё одна строка",
+            "BTCUSDT 82800 up отбой",
+            "  Entry: 82800",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 1
+        assert r.skipped == []
+        assert r.valid[0].setup_note == "отбой\nEntry: 82800"
+
+    def test_multiple_continuation_lines(self):
+        """Несколько continuation-строк — все в note через \\n."""
+        text = "\n".join([
+            "BTCUSDT 82800 up отбой",
+            "  Entry: 82800–82850",
+            "  SL: 82200",
+            "  TP1: 83600",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 1
+        assert r.valid[0].setup_note == (
+            "отбой\nEntry: 82800–82850\nSL: 82200\nTP1: 83600"
+        )
+
+    def test_blank_lines_inside_block_ignored(self):
+        """Пустые строки внутри блока не ломают склейку."""
+        text = "\n".join([
+            "BTCUSDT 82800 up отбой",
+            "",
+            "  Entry: 82800",
+            "",
+            "  SL: 82200",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 1
+        assert r.valid[0].setup_note == "отбой\nEntry: 82800\nSL: 82200"
+
+    def test_broken_first_line_block_goes_to_skipped(self):
+        """Битый тикер — весь блок в skipped, continuation не выносится."""
+        text = "\n".join([
+            "BTCUSDC 82800 up отбой",
+            "  Entry: 82800",
+        ])
+        r = parse_mass_add(text)
+        assert len(r.valid) == 0
+        assert len(r.skipped) == 1
+        assert r.skipped[0].reason == "не USDT"
+        assert r.skipped[0].line_no == 1
+
+    def test_multiline_returns_correct_line_numbers(self):
+        """line_no — номер ТИКЕРНОЙ строки в исходном тексте."""
+        text = "\n".join([
+            "BTCUSDT 82800 up",
+            "  Entry: 82800",
+            "",
+            "ETHUSDT 2500 up",
+            "  Entry: 2500",
+        ])
+        r = parse_mass_add(text)
+        assert [p.line_no for p in r.valid] == [1, 4]
+
+    def test_mixed_valid_and_broken(self):
+        """Порядок: valid и skipped, каждый со своим line_no."""
+        text = "\n".join([
+            "BTCUSDT 82800 up отбой",
+            "  Entry: 82800",
+            "мусор",
+            "ETHUSDT 2500 up",
+            "  Entry: 2500",
+        ])
+        r = parse_mass_add(text)
+        assert [p.symbol for p in r.valid] == ["BTCUSDT", "ETHUSDT"]
+        assert len(r.skipped) == 1
+        assert r.skipped[0].raw == "мусор"
+        assert r.skipped[0].reason == "формат"

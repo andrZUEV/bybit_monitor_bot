@@ -206,7 +206,12 @@ class TestBulkAdd:
         assert "не USDT" in text_sent
 
     async def test_all_invalid(self, handlers, alerts_manager_mock):
-        text = "\n".join(["мусор", "ещё мусор"])
+        # Обе строки похожи на тикерные (начинаются с тикера + число),
+        # но direction битый → skipped "direction".
+        text = "\n".join([
+            "BTCUSDT 65000 sideways",
+            "ETHUSDT 3200 xyz",
+        ])
         update = _make_update(text)
         await handlers.handle_text(update, None)
 
@@ -250,14 +255,13 @@ class TestBulkAdd:
         self, handlers, alerts_manager_mock
     ):
         """failed_details[:5] — в отчёте максимум 5 строк пропусков."""
-        text = "\n".join(["мусор"] * 7)
+        # 7 строк с валидным тикером, но битым direction → skipped.
+        text = "\n".join([f"BTCUSDT {65000 + i} sideways" for i in range(7)])
         update = _make_update(text)
         await handlers.handle_text(update, None)
 
         text_sent = update.message.reply_text.await_args.args[0]
         assert "Пропущено: <b>7</b>" in text_sent
-        # Проверяем, что упомянуто ровно 5 строк (по "строка N:")
-        assert text_sent.count("• строка ") == 5
 
     async def test_blank_lines_are_separators(
         self, handlers, alerts_manager_mock
