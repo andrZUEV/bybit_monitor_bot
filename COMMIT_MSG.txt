@@ -1,0 +1,12 @@
+feat(reversal): show setup probability line in alert
+
+- analyzer.format_alert_message: новый параметр probability_line
+  (опциональный), вставляется перед блоком "Итого".
+- monitor._build_probability_line: собирает setup_key из evaluation,
+  берёт rate/n через reversal_diary.probability_for (с fallback на ALL),
+  форматирует "📈 История: <setup> → X% (n=N)".
+- monitor._check_price_cross: передаёт probability_line в
+  format_alert_message.
+
+Пока n < reversal_min_n_display (по умолчанию 15) — строка
+не появляется, поведение алерта не меняется.
