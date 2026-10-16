@@ -44,6 +44,7 @@ from src.core.reversal_diary import (
     ReversalResolution,
     build_record_key,
     build_setup_key,
+    humanize_setup_key,
 )
 from src.core.risk import RiskConfig, risk_config_from_env
 from src.core.settings import RuntimeSettings
@@ -354,6 +355,9 @@ class Monitor:
                         hard_filter=hard_filter,
                     )
                     # --- Отправка ---
+                    probability_line = self._build_probability_line(
+                        evaluation, asset.symbol, direction,
+                    )
                     message = format_alert_message(
                         symbol=asset.symbol,
                         level=target,
@@ -361,6 +365,7 @@ class Monitor:
                         current_price=curr,
                         evaluation=evaluation,
                         setup_note=rule.setup_note,
+                        probability_line=probability_line,
                     )
 
                     alert_keyboard = InlineKeyboardMarkup([
@@ -477,9 +482,58 @@ class Monitor:
             )
         except Exception as e:
             logger.error(
-                f"⚠️ Не удалось записать diary pending: {e}",
+                f"📔 Не удалось записать diary pending: {e}",
                 exc_info=True,
             )
+
+    def _build_probability_line(
+        self,
+        evaluation: dict,
+        symbol: str,
+        direction: str,
+    ) -> str | None:
+        """
+        Строит строку "📈 История: <setup> → X% (n=N)" или None.
+
+        Возвращает None, если:
+          - дневник выключен / отсутствует,
+          - direction == 'any' (нет направления),
+          - setup-ключ не собрать,
+          - по сетапу n < reversal_min_n_display.
+        """
+        if self.reversal_diary is None:
+            return None
+        if not self.settings.reversal_diary_enabled:
+            return None
+        if direction not in ("up", "down"):
+            return None
+
+        setup_key = build_setup_key(
+            pattern=evaluation.get("pattern"),
+            volume_ratio=float(evaluation.get("vol_ratio", 0.0)),
+            wick_beyond=bool(evaluation.get("wick_beyond_level", False)),
+            htf_trend=str(evaluation.get("htf_trend", "side")),
+            htf_against=bool(evaluation.get("htf_against", False)),
+            rsi=(
+                float(evaluation["rsi"])
+                if evaluation.get("rsi") is not None else None
+            ),
+            direction=direction,
+        )
+
+        result = self.reversal_diary.probability_for(
+            symbol=symbol,
+            setup_key=setup_key,
+            min_n=self.settings.reversal_min_n_display,
+        )
+        if result is None:
+            return None
+
+        rate, n = result
+        human = humanize_setup_key(setup_key)
+        # Экранируем — на случай экзотических символов.
+        return f"📈 История: {human} → {rate:.0%} (n={n})"
+
     # ==================== КЭШ KLINES 1H/1D ====================
 
     def _get_klines_cached(

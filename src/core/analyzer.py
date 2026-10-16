@@ -832,6 +832,7 @@ def format_alert_message(
     current_price: float,
     evaluation: dict[str, Any],
     setup_note: str = "",
+    probability_line: str | None = None,
 ) -> str:
     """
     Форматирует сообщение алерта в HTML для Telegram.
@@ -938,6 +939,11 @@ def format_alert_message(
     lines.append("🔍 <b>Фильтры:</b>")
     for f in evaluation.get("filters", []):
         lines.append(f"• {html_escape(f)}")
+
+    # 6.5. История вероятности (Reversal diary)
+    if probability_line:
+        lines.append("")
+        lines.append(probability_line)
 
     # 7. Итог
     lines.append("")
