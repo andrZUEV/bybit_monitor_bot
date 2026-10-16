@@ -2,8 +2,8 @@
 Inline-клавиатуры для Telegram бота.
 """
 
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.error import BadRequest
 
 
 def main_menu_keyboard() -> InlineKeyboardMarkup:
@@ -109,6 +109,7 @@ def main_menu_keyboard_with_settings(threshold_describe: str) -> InlineKeyboardM
         [InlineKeyboardButton("➕ Добавить алерт", callback_data="menu_add")],
         [InlineKeyboardButton("🔍 Скринер", callback_data="menu_screener")],
         [InlineKeyboardButton("📊 Сканер уровней", callback_data="ls_menu")],
+        [InlineKeyboardButton("📈 Статистика разворотов", callback_data="rd_menu")],
         [InlineKeyboardButton("💰 Текущие цены", callback_data="menu_prices")],
         [InlineKeyboardButton("📋 Мои алерты", callback_data="menu_list")],
         [InlineKeyboardButton("📊 Выгрузить данные", callback_data="menu_export")],
@@ -363,3 +364,92 @@ def level_scan_score_presets_keyboard(
     ])
     return InlineKeyboardMarkup(keyboard)
 
+# ==================== ДНЕВНИК РАЗВОРОТОВ (Этап 7) ====================
+
+def rd_menu_keyboard(
+    enabled: bool,
+    min_n_display: int,
+    total: int,
+) -> InlineKeyboardMarkup:
+    """Меню дневника разворотов."""
+    status = "ВКЛ" if enabled else "ВЫКЛ"
+
+    keyboard: list[list[InlineKeyboardButton]] = []
+
+    if total > 0:
+        keyboard.append([
+            InlineKeyboardButton(
+                "📊 Показать статистику",
+                callback_data="rd_show_stats",
+            ),
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton(
+            f"🔔 Запись: {status}",
+            callback_data="rd_toggle_enabled",
+        ),
+    ])
+    keyboard.append([
+        InlineKeyboardButton(
+            f"🎯 Мин. n для показа: {min_n_display}",
+            callback_data="rd_set_min_n",
+        ),
+    ])
+    if total > 0:
+        keyboard.append([
+            InlineKeyboardButton(
+                "📄 Выгрузить CSV",
+                callback_data="rd_export_csv",
+            ),
+        ])
+        keyboard.append([
+            InlineKeyboardButton(
+                "🗑 Очистить дневник",
+                callback_data="rd_clear_confirm",
+            ),
+        ])
+    keyboard.append([
+        InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main"),
+    ])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def rd_min_n_presets_keyboard(
+    presets: tuple[int, ...],
+    current: int,
+) -> InlineKeyboardMarkup:
+    """Пресеты порога min_n для показа статистики."""
+    keyboard: list[list[InlineKeyboardButton]] = []
+    row: list[InlineKeyboardButton] = []
+    for p in presets:
+        label = str(p)
+        if p == current:
+            label = f"✅ {p}"
+        row.append(InlineKeyboardButton(
+            label, callback_data=f"rd_set_min_n|{p}",
+        ))
+    for i in range(0, len(row), 2):
+        keyboard.append(row[i:i + 2])
+    keyboard.append([
+        InlineKeyboardButton("✏️ Свой", callback_data="rd_set_min_n_custom"),
+    ])
+    keyboard.append([
+        InlineKeyboardButton("◀ Назад", callback_data="rd_menu"),
+    ])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def rd_clear_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Подтверждение очистки дневника."""
+    keyboard = [
+        [InlineKeyboardButton(
+            "🗑 Да, очистить всё",
+            callback_data="rd_clear_yes",
+        )],
+        [InlineKeyboardButton(
+            "◀ Отмена",
+            callback_data="rd_menu",
+        )],
+    ]
+    return InlineKeyboardMarkup(keyboard)

@@ -13,12 +13,12 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 
 from src.core.alert_history import init_alert_history
+from src.core.alerts import AlertsManager
+from src.core.level_scan_scheduler import LevelScanScheduler
+from src.core.monitor import AlertEvent, Monitor
 from src.core.reversal_diary import init_reversal_diary
 from src.core.reversal_diary_scheduler import ReversalDiaryScheduler
-from src.core.alerts import AlertsManager
-from src.core.monitor import AlertEvent, Monitor
 from src.core.settings import get_settings, init_settings
-from src.core.level_scan_scheduler import LevelScanScheduler
 from src.telegram.bot import TelegramBot
 from src.utils.config import Config
 from src.utils.data_exporter import DataExporter

@@ -12,18 +12,14 @@
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
 from src.core.reversal_diary import (
     LOOKAHEAD_BARS,
-    MIN_MOVE_ATR,
-    SL_BUFFER_ATR,
     ReversalDiary,
     ReversalResolution,
-    SetupStat,
     _extract_level,
     _htf_align,
     _pattern_bucket,
@@ -34,7 +30,6 @@ from src.core.reversal_diary import (
     humanize_setup_key,
     resolve_outcome,
 )
-
 
 # ==================== helpers ====================
 

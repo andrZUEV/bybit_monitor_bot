@@ -22,9 +22,9 @@ from telegram.ext import ContextTypes
 
 from src.api.bybit_client import BybitClient
 from src.core import level_scanner
-from src.core.level_scanner import _round_price_for_callback
 from src.core.alert_history import get_alert_history
 from src.core.alerts import AlertsManager
+from src.core.level_scanner import _round_price_for_callback
 from src.core.settings import get_settings
 from src.parsers.mass_add import parse_mass_add
 from src.telegram import keyboards
@@ -292,6 +292,30 @@ class TelegramHandlers:
             logger.info(f"⏰ Сканер уровней: часы {s.level_scan_hours_utc}")
             await update.message.reply_text(
                 f"✅ Часы сканера: <b>{s.level_scan_hours_utc}</b> UTC",
+                parse_mode="HTML",
+                reply_markup=self._main_menu_kb(),
+            )
+            return
+
+        # --- Дневник разворотов: ввод своего min_n ---
+        if step == "waiting_rd_min_n":
+            try:
+                n = int(text.strip())
+            except ValueError:
+                await update.message.reply_text(
+                    "❌ Не понял число. Введите, например, <code>20</code>.",
+                    parse_mode="HTML",
+                    reply_markup=keyboards.cancel_keyboard(),
+                )
+                return
+            n = max(1, min(1000, n))
+            s = get_settings()
+            s.reversal_min_n_display = n
+            s.save()
+            self._reset_state(chat_id)
+            logger.info(f"🎯 Дневник: min_n = {s.reversal_min_n_display}")
+            await update.message.reply_text(
+                f"✅ Мин. n: <b>{s.reversal_min_n_display}</b>",
                 parse_mode="HTML",
                 reply_markup=self._main_menu_kb(),
             )
@@ -937,6 +961,77 @@ class TelegramHandlers:
                 parse_mode="HTML",
                 reply_markup=keyboards.cancel_keyboard(),
             )
+
+        # ========== Дневник разворотов (Этап 7) ==========
+        elif data == "rd_menu":
+            await self._show_rd_menu(query)
+
+        elif data == "rd_show_stats":
+            await self._show_rd_stats(query)
+
+        elif data == "rd_toggle_enabled":
+            s = get_settings()
+            s.reversal_diary_enabled = not s.reversal_diary_enabled
+            s.save()
+            logger.info(f"📈 Дневник разворотов: {s.describe_reversal_diary()}")
+            await self._show_rd_menu(query)
+
+        elif data == "rd_set_min_n":
+            s = get_settings()
+            await query.edit_message_text(
+                f"🎯 <b>Минимальное n для показа</b>\n\n"
+                f"Текущее: <b>{s.reversal_min_n_display}</b>\n\n"
+                f"Строка «📈 История ...» появляется в алерте только "
+                f"если накоплено ≥ N наблюдений по сетапу.",
+                parse_mode="HTML",
+                reply_markup=keyboards.rd_min_n_presets_keyboard(
+                    Config.REVERSAL_MIN_N_PRESETS,
+                    s.reversal_min_n_display,
+                ),
+            )
+
+        elif data.startswith("rd_set_min_n|"):
+            raw = data.split("|", 1)[1]
+            try:
+                n = int(raw)
+            except ValueError:
+                await query.answer("Ошибка парсинга", show_alert=True)
+                return
+            n = max(1, min(1000, n))
+            s = get_settings()
+            s.reversal_min_n_display = n
+            s.save()
+            logger.info(f"🎯 Дневник: min_n = {s.reversal_min_n_display}")
+            await self._show_rd_menu(query)
+
+        elif data == "rd_set_min_n_custom":
+            self.user_state[chat_id] = {"step": "waiting_rd_min_n"}
+            await query.edit_message_text(
+                "✏️ <b>Своё значение min_n</b>\n\n"
+                "Введите целое число от <b>1</b> до <b>1000</b>.\n"
+                "Например: <code>20</code>",
+                parse_mode="HTML",
+                reply_markup=keyboards.cancel_keyboard(),
+            )
+
+        elif data == "rd_export_csv":
+            await self._handle_rd_export_csv(query)
+
+        elif data == "rd_clear_confirm":
+            await query.edit_message_text(
+                "🗑 <b>Очистить весь дневник разворотов?</b>\n\n"
+                "Все записи (pending / success / fail / expired) будут удалены.\n"
+                "Действие необратимо.",
+                parse_mode="HTML",
+                reply_markup=keyboards.rd_clear_confirm_keyboard(),
+            )
+
+        elif data == "rd_clear_yes":
+            from src.core.reversal_diary import get_reversal_diary
+            diary = get_reversal_diary()
+            diary.clear()
+            logger.info("🗑 Дневник разворотов очищен")
+            await self._show_rd_menu(query)
 
         # ========== Необработанный callback ==========
         else:
@@ -1649,6 +1744,93 @@ class TelegramHandlers:
                 if abs(rule.price - price) / max(abs(price), 1e-9) < 1e-5:
                     return True
         return False    
+
+
+    # ==================== ДНЕВНИК РАЗВОРОТОВ (Этап 7) ====================
+
+    async def _show_rd_menu(self, query):
+        """Меню дневника разворотов."""
+        from src.core.reversal_diary import get_reversal_diary
+        diary = get_reversal_diary()
+        s = get_settings()
+
+        total = diary.count()
+        pending = diary.count_by_status("pending")
+        success = diary.count_by_status("success")
+        fail = diary.count_by_status("fail")
+        expired = diary.count_by_status("expired")
+
+        await query.edit_message_text(
+            f"📈 <b>Дневник разворотов</b>\n\n"
+            f"Записей: <b>{total}</b>\n"
+            f"⏳ pending: <b>{pending}</b>\n"
+            f"✅ success: <b>{success}</b>\n"
+            f"❌ fail: <b>{fail}</b>\n"
+            f"⌛ expired: <b>{expired}</b>\n\n"
+            f"🔔 Запись: <b>{s.describe_reversal_diary()}</b>\n"
+            f"🎯 Мин. n для показа: <b>{s.reversal_min_n_display}</b>\n\n"
+            f"Дневник пишет исход каждого price-alert'а (success/fail по "
+            f"ATR) и агрегирует статистику по сетапам.\n"
+            f"Не влияет на score и hard-фильтры.",
+            parse_mode="HTML",
+            reply_markup=keyboards.rd_menu_keyboard(
+                s.reversal_diary_enabled,
+                s.reversal_min_n_display,
+                total,
+            ),
+        )
+
+    async def _show_rd_stats(self, query):
+        """Экран статистики: топ-комбинации по всем символам + ALL."""
+        from src.core.reversal_diary import get_reversal_diary
+        diary = get_reversal_diary()
+
+        if diary.count() == 0:
+            await query.answer("Дневник пуст", show_alert=True)
+            return
+
+        await query.edit_message_text("⏳ Считаю статистику...")
+
+        text = diary.format_stats_message(symbol=None, limit=10)
+
+        await query.edit_message_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=keyboards.rd_menu_keyboard(
+                get_settings().reversal_diary_enabled,
+                get_settings().reversal_min_n_display,
+                diary.count(),
+            ),
+        )
+
+    async def _handle_rd_export_csv(self, query):
+        """Экспорт дневника в CSV."""
+        from src.core.reversal_diary import get_reversal_diary
+        from src.utils.config import Config as _C
+
+        diary = get_reversal_diary()
+        if diary.count() == 0:
+            await query.answer("Дневник пуст", show_alert=True)
+            return
+
+        await query.edit_message_text("⏳ Генерирую CSV...")
+
+        out_path = _C.EXPORTS_DIR / f"reversal_diary_{int(time.time())}.csv"
+        csv_path = await asyncio.to_thread(diary.export_csv, out_path)
+
+        with open(csv_path, "rb") as f:
+            await query.message.reply_document(
+                document=InputFile(f, filename=csv_path.name),
+                caption=(
+                    f"📈 Дневник разворотов: {diary.count()} записей"
+                ),
+            )
+        try:
+            os.remove(csv_path)
+        except Exception:
+            pass
+
+        await self._show_rd_menu(query)
 
 async def safe_edit_to_main_menu(
     query,

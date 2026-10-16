@@ -35,7 +35,7 @@ import os
 import tempfile
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -721,7 +721,7 @@ class ReversalDiary:
         if not stats_list:
             return "📈 <b>Дневник разворотов</b>\n\nПока нет данных."
 
-        header = f"📈 <b>Дневник разворотов"
+        header = "📈 <b>Дневник разворотов"
         if symbol:
             header += f" · {symbol}"
         header += "</b>\n"

@@ -112,6 +112,8 @@ class RuntimeSettings:
             level_scan_enabled=ls_enabled,
             level_scan_hours_utc=ls_hours,
             level_scan_min_score=ls_min_score,
+            reversal_diary_enabled=rd_enabled,
+            reversal_min_n_display=rd_min_n,
         )
         s._path = p
         return s

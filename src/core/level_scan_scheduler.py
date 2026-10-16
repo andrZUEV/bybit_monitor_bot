@@ -20,7 +20,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from src.core.settings import RuntimeSettings
 
@@ -30,8 +30,6 @@ logger = logging.getLogger(__name__)
 # Как часто проверять флаг enabled, пока ждём часа X (секунды).
 _IDLE_POLL_SEC: float = 60.0
 
-# За сколько секунд до целевого часа просыпаться.
-_WAKE_MARGIN_SEC: float = 5.0
 
 
 class LevelScanScheduler:
@@ -65,6 +63,8 @@ class LevelScanScheduler:
         self._stop_event = threading.Event()
         self._last_run_ts: float = 0.0
         self._lock = threading.Lock()
+        # Защита от двойного запуска в один час: (date, hour).
+        self._last_run_date_hour: tuple | None = None
 
     # ==================== ПУБЛИЧНЫЙ API ====================
 
@@ -99,7 +99,15 @@ class LevelScanScheduler:
     # ==================== ВНУТРЕННИЕ ====================
 
     def _loop(self) -> None:
+        """
+        Каждые _IDLE_POLL_SEC проверяем: наступил ли один из часов
+        из level_scan_hours_utc? Если да — запускаем скан.
+
+        Защита от двойного запуска в один и тот же час: помним
+        _last_run_date_hour — дату и час последнего запуска.
+        """
         logger.debug("LevelScanScheduler: loop started")
+
         while not self._stop_event.is_set():
             try:
                 if not self.settings.level_scan_enabled:
@@ -107,26 +115,24 @@ class LevelScanScheduler:
                         break
                     continue
 
-                next_run = self._compute_next_run()
-                if next_run is None:
-                    if self._stop_event.wait(_IDLE_POLL_SEC):
-                        break
-                    continue
-
                 now = datetime.now(UTC)
-                sleep_sec = (next_run - now).total_seconds()
-                if sleep_sec > 0:
-                    # Просыпаемся не позже чем через час, чтобы
-                    # перепроверить флаг enabled.
-                    if self._stop_event.wait(min(sleep_sec, 3600.0)):
-                        break
-                    continue
+                hours = self.settings.parsed_hours_utc()
 
-                # Время пришло
-                self._safe_run()
+                # Совпадает ли текущий час с одним из часов расписания
+                # и не запускали ли мы уже в этот час?
+                if now.hour in hours:
+                    key = (now.date(), now.hour)
+                    if self._last_run_date_hour != key:
+                        logger.info(
+                            f"🔍 LevelScanScheduler: сработал по расписанию "
+                            f"({now.hour}:00 UTC)"
+                        )
+                        self._last_run_date_hour = key
+                        self._safe_run()
 
-                # Защита от двойного запуска в ту же минуту
-                time.sleep(2.0)
+                # Спим минуту до следующей проверки.
+                if self._stop_event.wait(_IDLE_POLL_SEC):
+                    break
 
             except Exception as e:
                 logger.error(
@@ -160,31 +166,3 @@ class LevelScanScheduler:
                 logger.error(
                     f"❌ LevelScanScheduler: ошибка скана: {e}", exc_info=True,
                 )
-
-    def _compute_next_run(self) -> datetime | None:
-        """
-        Ближайшее время (UTC) из self.settings.parsed_hours_utc(),
-        которое ещё не наступило. Если все часы в сегодняшних сутках
-        прошли — берём первый час завтра.
-        """
-        hours = self.settings.parsed_hours_utc()
-        if not hours:
-            return None
-
-        now = datetime.now(UTC)
-        today = now.date()
-
-        for h in hours:
-            candidate = datetime(
-                today.year, today.month, today.day,
-                h, 0, 0, tzinfo=UTC,
-            )
-            if candidate > now + timedelta(seconds=_WAKE_MARGIN_SEC):
-                return candidate
-
-        tomorrow = today + timedelta(days=1)
-        first_h = hours[0]
-        return datetime(
-            tomorrow.year, tomorrow.month, tomorrow.day,
-            first_h, 0, 0, tzinfo=UTC,
-        )
