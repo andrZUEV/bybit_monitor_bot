@@ -21,6 +21,7 @@ from src.api.bybit_client import BybitClient
 from src.core.alert_history import get_alert_history
 from src.core.alerts import AlertsManager
 from src.core.settings import get_settings
+from src.core.virtual_trader import get_virtual_trader
 from src.parsers.mass_add import parse_mass_add
 from src.telegram import keyboards
 from src.telegram.handlers_common import CommonMixin, safe_edit_to_main_menu
@@ -28,6 +29,7 @@ from src.telegram.handlers_diary import DiaryMixin
 from src.telegram.handlers_export import ExportMixin
 from src.telegram.handlers_levels import LevelScanMixin
 from src.telegram.handlers_screener import ScreenerMixin
+from src.telegram.handlers_vt import VirtualTradeMixin
 from src.utils.config import Config
 from src.utils.formatting import html_escape
 from telegram import InputFile, Update
@@ -41,6 +43,7 @@ class TelegramHandlers(
     ExportMixin,
     LevelScanMixin,
     DiaryMixin,
+    VirtualTradeMixin,
 ):
     def __init__(
         self,
@@ -970,10 +973,43 @@ class TelegramHandlers(
             logger.info("🗑 Дневник разворотов очищен")
             await self._show_rd_menu(query)
 
+        # ========== Виртуальные сделки ==========
+        elif data == "vt_menu":
+            await self._show_vt_menu(query)
+            
+        elif data == "vt_list_active":
+            await self._show_vt_list(query, "active")
+            
+        elif data == "vt_list_closed":
+            await self._show_vt_list(query, "closed")
+            
+        elif data == "vt_stats":
+            await self._show_vt_stats(query)
+            
+        elif data == "vt_toggle_enabled":
+            s = get_settings()
+            s.virtual_trader_enabled = not s.virtual_trader_enabled
+            s.save()
+            await self._show_vt_menu(query)
+
+        elif data.startswith("vt_take|"):
+            await self._handle_take_to_diary(query, data)
+            
+        elif data.startswith("vt_cancel|"):
+            trade_id = data.split("|", 1)[1]
+            trader = get_virtual_trader()
+            if trader.cancel(trade_id):
+                await query.answer("✅ Сделка отменена", show_alert=False)
+                await self._show_vt_menu(query)
+            else:
+                await query.answer("Не удалось отменить", show_alert=True)
+
         # ========== Необработанный callback ==========
         else:
             logger.warning(f"⚠️ Необработанный callback: {data!r}")
             await query.answer("Команда в разработке", show_alert=False)
+
+
 
     async def _handle_delete_alert(self, update: Update, data: str):
         """
@@ -1011,6 +1047,8 @@ class TelegramHandlers(
             )
         else:
             await query.answer("Алерт не найден", show_alert=True)
+
+
 
     # ==================== ЭКРАНЫ ====================
 

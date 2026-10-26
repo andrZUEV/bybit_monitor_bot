@@ -19,6 +19,8 @@ from src.core.monitor import AlertEvent, Monitor
 from src.core.reversal_diary import init_reversal_diary
 from src.core.reversal_diary_scheduler import ReversalDiaryScheduler
 from src.core.settings import get_settings, init_settings
+from src.core.virtual_trader import init_virtual_trader
+from src.core.virtual_trader_scheduler import VirtualTraderScheduler
 from src.telegram.bot import TelegramBot
 from src.utils.config import Config
 from src.utils.data_exporter import DataExporter
@@ -119,6 +121,14 @@ def main():
         )
     else:
         logger.info("📔 Дневник разворотов ВЫКЛЮЧЕН")
+
+    # 2.4. Виртуальный трейдер
+    virtual_trader = None
+    if Config.VIRTUAL_TRADER_ENABLED:
+        virtual_trader = init_virtual_trader(Config.VIRTUAL_TRADER_FILE)
+        logger.info(
+            f"💼 Виртуальный трейдер: {virtual_trader.count()} сделок"
+        )
 
     # 3. Инициализация Telegram бота
     global telegram_bot
@@ -237,6 +247,22 @@ def main():
         )
         reversal_scheduler.start()
         logger.info("✅ Планировщик дневника разворотов запущен")
+
+    # 5.4. Планировщик виртуальных сделок
+    vt_scheduler: VirtualTraderScheduler | None = None
+    if virtual_trader is not None:
+        vt_scheduler = VirtualTraderScheduler(
+            trader=virtual_trader,
+            klines_provider=lambda sym, cat: telegram_bot.bybit_client.get_klines_cached(
+                sym, cat, "15", 200,
+            ),
+            category_provider=_category_provider,
+            interval_min=Config.VIRTUAL_TRADER_RESOLVE_INTERVAL_MIN,
+            enabled_provider=lambda: get_settings().virtual_trader_enabled,
+        )
+        vt_scheduler.start()
+        logger.info("✅ Планировщик виртуальных сделок запущен")
+
     # 6. Основной цикл (БЛОКИРУЮЩИЙ)
     try:
         logger.info("▶️ Мониторинг начался. Нажмите Ctrl+C для остановки.")
@@ -258,11 +284,32 @@ def main():
                 reversal_scheduler.stop()
         except Exception:
             pass
+
+        try:
+            if vt_scheduler is not None:
+                vt_scheduler.stop()
+        except Exception:
+            pass
         monitor.stop()
         telegram_bot.stop()
         time.sleep(1.5)
         logger.info("✅ Приложение успешно остановлено. До встречи!")
         print("=" * 60)
+
+    # 5.4. Планировщик виртуальных сделок
+    vt_scheduler: VirtualTraderScheduler | None = None
+    if virtual_trader is not None:
+        vt_scheduler = VirtualTraderScheduler(
+            trader=virtual_trader,
+            klines_provider=lambda sym, cat: telegram_bot.bybit_client.get_klines_cached(
+                sym, cat, "15", 200,
+            ),
+            category_provider=_category_provider,
+            interval_min=Config.VIRTUAL_TRADER_RESOLVE_INTERVAL_MIN,
+            enabled_provider=lambda: get_settings().virtual_trader_enabled,
+        )
+        vt_scheduler.start()
+        logger.info("✅ Планировщик виртуальных сделок запущен")
 
 
 if __name__ == "__main__":

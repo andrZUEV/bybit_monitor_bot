@@ -368,7 +368,29 @@ class Monitor:
                         probability_line=probability_line,
                     )
 
-                    alert_keyboard = InlineKeyboardMarkup([
+                    buttons = []
+                    
+                    # Кнопка "Взять в дневник" (если есть план сделки)
+                    risk = evaluation.get("risk")
+                    if risk is not None:
+                        tp1 = risk.tp1 if risk.tp1 else 0.0
+                        tp2 = risk.tp2 if risk.tp2 else 0.0
+                        # Формат: vt_take|SYM|ENTRY|SL|TP1|TP2|DIR
+                        cb_data = (
+                            f"vt_take|{asset.symbol}|{risk.entry}|"
+                            f"{risk.stop}|{tp1}|{tp2}|{direction}"
+                        )
+                        
+                        # Если риск не valid — предупредим (через текст)
+                        label = "📝 Взять в дневник"
+                        if not risk.valid:
+                            label = "⚠️ Взять в дневник (риск)"
+                            
+                        buttons.append([
+                            InlineKeyboardButton(label, callback_data=cb_data)
+                        ])
+
+                    buttons.extend([
                         [InlineKeyboardButton(
                             f"🗑 Удалить {asset.symbol} @ {target}",
                             callback_data=f"del|{asset.symbol}|{target}|{direction}",
@@ -381,6 +403,8 @@ class Monitor:
                             "🏠 Главное меню", callback_data="menu_main"
                         )],
                     ])
+                    
+                    alert_keyboard = InlineKeyboardMarkup(buttons)
 
                     event = AlertEvent(
                         event_type="price_cross",

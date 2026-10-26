@@ -61,6 +61,10 @@ class RuntimeSettings:
     _path: Path | None = None
     _lock: threading.RLock = None  # type: ignore[assignment]
 
+    # --- Virtual Trader ---
+    virtual_trader_enabled: bool = True
+    virtual_trader_default_risk: float = 1.0
+
     def __post_init__(self) -> None:
         if self._lock is None:
             self._lock = threading.RLock()
@@ -105,6 +109,13 @@ class RuntimeSettings:
             data.get("reversal_min_n_display", 15), default=15,
         )
 
+        vt_enabled = cls._parse_bool(
+            data.get("virtual_trader_enabled", True), default=True,
+        )
+        vt_risk = cls._parse_score(
+            data.get("virtual_trader_default_risk", 1.0), default=1.0,
+        )
+
         s = cls(
             alert_min_score=min_score,
             send_invalid_alerts=send_invalid,
@@ -114,6 +125,8 @@ class RuntimeSettings:
             level_scan_min_score=ls_min_score,
             reversal_diary_enabled=rd_enabled,
             reversal_min_n_display=rd_min_n,
+            virtual_trader_enabled=vt_enabled,
+            virtual_trader_default_risk=vt_risk,
         )
         s._path = p
         return s
@@ -132,6 +145,8 @@ class RuntimeSettings:
                 level_scan_enabled=True,
                 level_scan_hours_utc="6,18",
                 level_scan_min_score=5.0,
+                virtual_trader_enabled=True,
+                virtual_trader_default_risk=1.0,
             )
             s._path = p
             s.save()
@@ -154,6 +169,8 @@ class RuntimeSettings:
             s._path = p
             return s
 
+        def describe_virtual_trader(self) -> str:
+            return "ВКЛ" if self.virtual_trader_enabled else "ВЫКЛ"
     # ---------- запись ----------
 
     def save(self) -> None:
@@ -174,6 +191,8 @@ class RuntimeSettings:
                 "level_scan_min_score": self.level_scan_min_score,
                 "reversal_diary_enabled": self.reversal_diary_enabled,
                 "reversal_min_n_display": self.reversal_min_n_display,
+                "virtual_trader_enabled": self.virtual_trader_enabled,
+                "virtual_trader_default_risk": self.virtual_trader_default_risk,
             }
 
             fd, tmp_name = tempfile.mkstemp(
@@ -195,6 +214,10 @@ class RuntimeSettings:
     def describe_reversal_diary(self) -> str:
         """Короткое описание статуса дневника разворотов."""
         return "ВКЛ" if self.reversal_diary_enabled else "ВЫКЛ"
+
+    def describe_virtual_trader(self) -> str:
+        """Короткое описание статуса виртуального трейдера."""
+        return "ВКЛ" if self.virtual_trader_enabled else "ВЫКЛ"
 
     # ---------- хелперы ----------
 

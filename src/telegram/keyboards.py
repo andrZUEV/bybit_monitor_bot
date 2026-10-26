@@ -110,6 +110,7 @@ def main_menu_keyboard_with_settings(threshold_describe: str) -> InlineKeyboardM
         [InlineKeyboardButton("🔍 Скринер", callback_data="menu_screener")],
         [InlineKeyboardButton("📊 Сканер уровней", callback_data="ls_menu")],
         [InlineKeyboardButton("📈 Статистика разворотов", callback_data="rd_menu")],
+        [InlineKeyboardButton("💼 Виртуальные сделки", callback_data="vt_menu")],
         [InlineKeyboardButton("💰 Текущие цены", callback_data="menu_prices")],
         [InlineKeyboardButton("📋 Мои алерты", callback_data="menu_list")],
         [InlineKeyboardButton("📊 Выгрузить данные", callback_data="menu_export")],
@@ -451,5 +452,53 @@ def rd_clear_confirm_keyboard() -> InlineKeyboardMarkup:
             "◀ Отмена",
             callback_data="rd_menu",
         )],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# ==================== ВИРТУАЛЬНЫЕ СДЕЛКИ ====================
+
+def vt_menu_keyboard(enabled: bool, total: int, active: int) -> InlineKeyboardMarkup:
+    """Меню виртуального трейдера."""
+    status = "ВКЛ" if enabled else "ВЫКЛ"
+
+    keyboard = []
+    if active > 0:
+        keyboard.append([
+            InlineKeyboardButton("🟢 Активные сделки", callback_data="vt_list_active")
+        ])
+    if total > 0:
+        keyboard.append([
+            InlineKeyboardButton("📜 История сделок", callback_data="vt_list_closed")
+        ])
+        keyboard.append([
+            InlineKeyboardButton("📊 Статистика", callback_data="vt_stats")
+        ])
+        keyboard.append([
+            InlineKeyboardButton("📄 Экспорт CSV", callback_data="vt_export")
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton(f"🔔 Запись: {status}", callback_data="vt_toggle_enabled")
+    ])
+    keyboard.append([
+        InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")
+    ])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def vt_list_keyboard(status_filter: str) -> InlineKeyboardMarkup:
+    """Клавиатура под списком сделок."""
+    keyboard = [
+        [InlineKeyboardButton("◀ Назад в меню", callback_data="vt_menu")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def vt_trade_card_keyboard(trade_id: str) -> InlineKeyboardMarkup:
+    """Клавиатура под карточкой сделки."""
+    keyboard = [
+        [InlineKeyboardButton("🗑 Отменить сделку", callback_data=f"vt_cancel|{trade_id}")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")],
     ]
     return InlineKeyboardMarkup(keyboard)

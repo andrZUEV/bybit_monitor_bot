@@ -95,6 +95,19 @@ class Config:
     REVERSAL_MIN_N_PRESETS: tuple[int, ...] = (
         5, 10, 15, 20, 30, 50,
     )
+    # ==================== Виртуальные сделки ====================
+    VIRTUAL_TRADER_ENABLED: bool = os.getenv(
+        "VIRTUAL_TRADER_ENABLED", "true"
+    ).strip().lower() in ("1", "true", "yes", "on")
+
+    VIRTUAL_TRADER_RESOLVE_INTERVAL_MIN: int = int(
+        os.getenv("VIRTUAL_TRADER_RESOLVE_INTERVAL_MIN", "5")
+    )
+
+    VIRTUAL_TRADER_DEFAULT_RISK: float = float(
+        os.getenv("VIRTUAL_TRADER_DEFAULT_RISK", "1.0")
+    )
+
     # Фиксация исхода каждого price-alert'а и статистика по сетапам.
 
     # Включён ли дневник (пишем pending, резолвим, показываем статистику).
@@ -185,6 +198,7 @@ class Config:
     SETTINGS_FILE: Path = DATA_DIR / "settings.json"
     ALERT_HISTORY_FILE: Path = DATA_DIR / "alert_history.jsonl"
     REVERSAL_DIARY_FILE: Path = DATA_DIR / "reversal_diary.jsonl"
+    VIRTUAL_TRADER_FILE: Path = DATA_DIR / "virtual_trades.jsonl"
 
     # ==================== Валидация ====================
     @classmethod
