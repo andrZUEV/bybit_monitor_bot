@@ -14,6 +14,7 @@ import sys
 import threading
 
 import requests
+from telegram.error import TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
