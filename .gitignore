@@ -50,3 +50,6 @@ tmp_*.json.bak
 data/tmp/
 data/
 diag_scan.py
+
+data/reversal_diary.jsonl
+data/virtual_trades.jsonl

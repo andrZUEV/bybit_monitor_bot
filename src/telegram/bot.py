@@ -108,23 +108,27 @@ class TelegramBot:
 
     async def _run_async(self):
         """Async-обёртка запуска и остановки."""
-        await self._application.initialize()
-        await self._application.start()
-        await self._application.updater.start_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
-        )
+        # Retry на TimedOut (флапающий VPN/сеть). 3 попытки с паузой 5с.
+        import asyncio
+        import logging
+        from telegram.error import TimedOut
 
-        try:
-            while self._running:
-                await asyncio.sleep(1)
-        except (asyncio.CancelledError, KeyboardInterrupt):
-            pass
-        finally:
-            if self._application.updater.running:
-                await self._application.updater.stop()
-            await self._application.stop()
-            await self._application.shutdown()
+        _logger = logging.getLogger(__name__)
+        for attempt in range(1, 4):
+            try:
+                await self._application.initialize()
+                break
+            except TimedOut as e:
+                if attempt >= 3:
+                    _logger.error(f"❌ Telegram: TimedOut после 3 попыток: {e}")
+                    raise
+                _logger.warning(
+                    f"⚠️ Telegram: TimedOut (попытка {attempt}/3). "
+                    f"Пауза 5с и повтор..."
+                )
+                await asyncio.sleep(5.0)
+
+        await self._application.start()
 
     def start_async(self):
         """Запускает бота в отдельном потоке (неблокирующий)."""
