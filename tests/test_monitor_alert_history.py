@@ -48,14 +48,16 @@ def _make_asset(direction: str = "down", price: float = 100.0) -> Asset:
 
 
 def _make_evaluation(score: float, hard_filter: str | None = None) -> dict:
-    # Воспроизводим логику verdict из evaluate_alert:
-    #   score >= strong_min(5.5) → "💪 Strong"
-    #   score >= weak_min(3.5)   → "⚠️ Weak"
-    #   иначе                    → "❌ None"
+    #   score >= strong_min(5.5)   → "💪 Strong"
+    #   score >= weak_min(3.5)     → "⚠️ Weak"
+    #   score >= deliver_min(2.5)  → "🟡 Marginal"  (Этап 9)
+    #   иначе                      → "❌ None"
     if score >= 5.5:
         verdict = "💪 Strong"
     elif score >= 3.5:
         verdict = "⚠️ Weak"
+    elif score >= 2.5:
+        verdict = "🟡 Marginal"
     else:
         verdict = "❌ None"
 

@@ -62,12 +62,21 @@ PENALTIES = {
 THRESHOLDS = {
     "strong_min": 5.5,
     "weak_min": 3.5,
+    # Этап 9: порог ДОСТАВКИ отделён от порога вердикта.
+    # score >= deliver_min попадает в Telegram (если прошёл hard filters),
+    # даже если до weak_min не дотянул — раньше такие сигналы терялись молча.
+    "deliver_min": 2.5,
     "volume_good": 1.8,
     "volume_low": 1.0,
     "alert_max_age_hours": 36,
     "worn_touches": 5,
     "touch_tolerance_pct": 0.0015,
     "touches_lookback_hours": 48,
+    # Этап 9: строгое поглощение — тело ≥ 1.5× предыдущего, тень ≤ 0.5 тела.
+    # Слабое поглощение всё ещё распознаётся, но даёт половину веса паттерна.
+    "engulfing_body_mult": 1.5,
+    "engulfing_wick_ratio": 0.5,
+    "engulfing_loose_mult": 0.5,
     # Этап 4:
     "divergence_min_rsi_gap": 5.0,
     "divergence_min_price_gap_pct": 0.001,
@@ -147,6 +156,41 @@ def detect_pattern(
             return "bearish_engulfing"
 
     return None
+
+
+def is_strict_engulfing(
+    candle: dict[str, float],
+    prev_candle: dict[str, float],
+    direction: str,
+) -> bool:
+    """Строгое поглощение (Этап 9).
+
+    Вызывается только после того, как `detect_pattern` уже вернул
+    `bullish_engulfing`/`bearish_engulfing`, — то есть сам факт поглощения
+    установлен. Здесь проверяется качество свечи: тело не меньше
+    `engulfing_body_mult` тел предыдущей и «мешающая» тень не больше
+    `engulfing_wick_ratio` собственного тела.
+    """
+    o, h, low, c = candle["open"], candle["high"], candle["low"], candle["close"]
+    po, pc = prev_candle["open"], prev_candle["close"]
+
+    body = abs(c - o)
+    prev_body = abs(pc - po)
+    if body <= 0 or prev_body <= 0:
+        return False
+
+    if body < THRESHOLDS["engulfing_body_mult"] * prev_body:
+        return False
+
+    upper_wick = h - max(o, c)
+    lower_wick = min(o, c) - low
+    limit = THRESHOLDS["engulfing_wick_ratio"] * body
+
+    if direction == "up":
+        return upper_wick <= limit
+    if direction == "down":
+        return lower_wick <= limit
+    return False
 
 
 def has_wick_beyond_level(
@@ -408,6 +452,7 @@ def evaluate_alert(
         "htf_trend": "side",
         "age_hours": 0,
         "pattern": None,
+        "pattern_strict": None,
         "strength_score": 0,
         "details": ["Недостаточно данных"],
         "structure": None,
@@ -489,16 +534,26 @@ def evaluate_alert(
     }
 
     pattern_score = 0.0
+    pattern_strict: bool | None = None
     if pattern:
         pattern_score = WEIGHTS["pattern"]
+        # Этап 9: поглощение без запаса по телу и с длинной тенью — половина веса.
+        if pattern.endswith("_engulfing"):
+            pattern_strict = is_strict_engulfing(last_closed, prev_closed, direction)
+            if not pattern_strict:
+                pattern_score = round(
+                    WEIGHTS["pattern"] * THRESHOLDS["engulfing_loose_mult"], 2,
+                )
         score += pattern_score
-        signals.append(
-            f"Паттерн: {pattern_names.get(pattern, pattern)} +{pattern_score}"
-        )
+        pattern_label = pattern_names.get(pattern, pattern)
+        if pattern_strict is False:
+            pattern_label = f"{pattern_label} (слабое)"
+        signals.append(f"Паттерн: {pattern_label} +{pattern_score}")
         pattern_reason = (
             f"{pattern}: body={_body_size:.4g}, "
             f"lower_wick={_lower_wick:.4g}, upper_wick={_upper_wick:.4g}, "
-            f"body_to_range={_body_to_range_ratio:.2f}"
+            f"body_to_range={_body_to_range_ratio:.2f}, "
+            f"strict={pattern_strict}"
         )
     else:
         signals.append("Паттерн: нет")
@@ -783,6 +838,9 @@ def evaluate_alert(
         verdict = "💪 Strong"
     elif score >= THRESHOLDS["weak_min"]:
         verdict = "⚠️ Weak"
+    elif score >= THRESHOLDS["deliver_min"]:
+        # Этап 9: раньше этот диапазон схлопывался в "❌ None" и не доставлялся.
+        verdict = "🟡 Marginal"
     else:
         verdict = "❌ None"
 
@@ -797,6 +855,7 @@ def evaluate_alert(
         "htf_trend": htf_trend_legacy,
         "age_hours": round(age_hours, 1),
         "pattern": pattern,
+        "pattern_strict": pattern_strict,
         "strength_score": max(0, int(score)),
         "details": signals + filters,
         # Этап 4:

@@ -314,35 +314,6 @@ class BybitClient:
                 del self._klines_cache[k]
             return len(keys)
 
-    def get_candle_volume_ratio(
-        self,
-        symbol: str,
-        category: str,
-        interval: str,
-        periods: int = 20,
-    ) -> dict[str, float] | None:
-        """
-        Отношение объёма ТЕКУЩЕЙ свечи к среднему за `periods` предыдущих.
-
-        Returns:
-            {"ratio": float, "current": float, "avg": float} или None.
-        """
-        klines = self.get_klines(symbol, category, interval, limit=periods + 1)
-        if not klines or len(klines) < periods + 1:
-            return None
-
-        current_volume = float(klines[0][5])
-        avg_volume = sum(float(k[5]) for k in klines[1:periods + 1]) / periods
-
-        if avg_volume == 0:
-            return {"ratio": 1.0, "current": current_volume, "avg": avg_volume}
-
-        return {
-            "ratio": current_volume / avg_volume,
-            "current": current_volume,
-            "avg": avg_volume,
-        }
-
     def get_screener_data(
         self,
         category: str = "linear",

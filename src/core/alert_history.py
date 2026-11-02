@@ -84,6 +84,8 @@ class AlertRecord:
     strategy_pass: bool = False   # прошёл ли по всем правилам стратегии
 
     # ---------- Служебное ----------
+    # Этап 9: строгость поглощения (None — паттерн не поглощение).
+    pattern_strict: bool | None = None
     recorded_at: float = field(default_factory=time.time)  # когда запись создана
 
 
@@ -437,6 +439,7 @@ def build_alert_record(
             else None
         ),
         hard_filter=evaluation.get("hard_filter"),
+        pattern_strict=evaluation.get("pattern_strict"),
     )
 
 # ==================== СИНГЛТОН ====================

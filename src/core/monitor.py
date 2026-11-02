@@ -67,7 +67,6 @@ KLINES_15M_LIMIT = Config.EXPORT_LIMITS["15"]   # 300
 KLINES_1H_LIMIT = Config.EXPORT_LIMITS["60"]    # 300
 KLINES_4H_LIMIT = Config.EXPORT_LIMITS["240"]   # 400
 KLINES_1D_LIMIT = Config.EXPORT_LIMITS["D"]     # 200
-VOLUME_PERIODS = 20
 
 # TTL кэша klines (в секундах). 1H меняется раз в час, 1D — раз в сутки.
 KLINES_1H_TTL = 3600
@@ -301,11 +300,6 @@ class Monitor:
                     KLINES_1D_LIMIT, KLINES_1D_TTL,
                 )
 
-                vol_data = self.client.get_candle_volume_ratio(
-                    asset.symbol, asset.category, "15", VOLUME_PERIODS
-                )
-                volume_ratio = vol_data["ratio"] if vol_data else 0.0
-
                 if klines_15m and klines_4h:
                     evaluation = evaluate_alert(
                         symbol=asset.symbol,
@@ -319,6 +313,10 @@ class Monitor:
                         klines_1d=klines_1d,
                         risk_cfg=self.risk_cfg,
                     )
+
+                    # Этап 9: объёмное отношение считает сам analyzer из тех же
+                    # klines_15m — отдельный REST-запрос больше не нужен.
+                    volume_ratio = float(evaluation.get("vol_ratio") or 0.0)
 
                     hard_filter = evaluation.get("hard_filter")
                     score_val = evaluation["score"]

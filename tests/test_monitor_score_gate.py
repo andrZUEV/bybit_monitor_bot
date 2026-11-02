@@ -1,4 +1,4 @@
-﻿"""
+"""
 Тесты гейта в _check_price_cross: фильтрация по score + send_invalid_alerts.
 
 Monitor создаём с моками, klines тоже мокаем. Проверяем, что on_alert вызван
@@ -16,13 +16,16 @@ from src.core.settings import RuntimeSettings
 
 def _make_evaluation(score: float, hard_filter: str | None = None) -> dict:
     # Воспроизводим логику verdict из evaluate_alert:
-    #   score >= strong_min(5.5) → "💪 Strong"
-    #   score >= weak_min(3.5)   → "⚠️ Weak"
-    #   иначе                    → "❌ None"
+    #   score >= strong_min(5.5)   → "💪 Strong"
+    #   score >= weak_min(3.5)     → "⚠️ Weak"
+    #   score >= deliver_min(2.5)  → "🟡 Marginal"  (Этап 9)
+    #   иначе                      → "❌ None"
     if score >= 5.5:
         verdict = "💪 Strong"
     elif score >= 3.5:
         verdict = "⚠️ Weak"
+    elif score >= 2.5:
+        verdict = "🟡 Marginal"
     else:
         verdict = "❌ None"
     return {
@@ -208,6 +211,96 @@ class TestInvalidAlertsFlag:
         monkeypatch.setattr(
             "src.core.monitor.evaluate_alert",
             lambda **kwargs: eval_hard,
+        )
+
+        asset = _make_asset(direction="down", price=100.0)
+        ticker = MagicMock()
+        ticker.price = 99.5
+        ticker.volume_24h = 1000.0
+        state = AssetState()
+        state.prev_price = 100.5
+
+        m._check_price_cross(asset, ticker, state)
+
+        on_alert.assert_not_called()
+
+class TestDeliveryThreshold:
+    """
+    Этап 9: порог доставки (deliver_min=2.5) отделён от порога вердикта
+    (weak_min=3.5). Раньше score в диапазоне [2.5, 3.5) молча терялся.
+    """
+
+    def test_marginal_score_sent(self, monkeypatch):
+        """score=3.0 < weak_min, но >= deliver_min → алерт уходит."""
+        settings = RuntimeSettings(alert_min_score=float("-inf"))
+        m, on_alert = _make_monitor(settings)
+
+        monkeypatch.setattr(
+            "src.core.monitor.evaluate_alert",
+            lambda **kwargs: _make_evaluation(score=3.0),
+        )
+
+        asset = _make_asset(direction="down", price=100.0)
+        ticker = MagicMock()
+        ticker.price = 99.5
+        ticker.volume_24h = 1000.0
+        state = AssetState()
+        state.prev_price = 100.5
+
+        m._check_price_cross(asset, ticker, state)
+
+        on_alert.assert_called_once()
+
+    def test_deliver_min_boundary_sent(self, monkeypatch):
+        """score ровно 2.5 — inclusive, алерт уходит."""
+        settings = RuntimeSettings(alert_min_score=float("-inf"))
+        m, on_alert = _make_monitor(settings)
+
+        monkeypatch.setattr(
+            "src.core.monitor.evaluate_alert",
+            lambda **kwargs: _make_evaluation(score=2.5),
+        )
+
+        asset = _make_asset(direction="down", price=100.0)
+        ticker = MagicMock()
+        ticker.price = 99.5
+        ticker.volume_24h = 1000.0
+        state = AssetState()
+        state.prev_price = 100.5
+
+        m._check_price_cross(asset, ticker, state)
+
+        on_alert.assert_called_once()
+
+    def test_below_deliver_min_skipped(self, monkeypatch):
+        """score=2.4 < deliver_min → не отправляем."""
+        settings = RuntimeSettings(alert_min_score=float("-inf"))
+        m, on_alert = _make_monitor(settings)
+
+        monkeypatch.setattr(
+            "src.core.monitor.evaluate_alert",
+            lambda **kwargs: _make_evaluation(score=2.4),
+        )
+
+        asset = _make_asset(direction="down", price=100.0)
+        ticker = MagicMock()
+        ticker.price = 99.5
+        ticker.volume_24h = 1000.0
+        state = AssetState()
+        state.prev_price = 100.5
+
+        m._check_price_cross(asset, ticker, state)
+
+        on_alert.assert_not_called()
+
+    def test_marginal_blocked_by_runtime_score(self, monkeypatch):
+        """Marginal проходит deliver_min, но режется alert_min_score из настроек."""
+        settings = RuntimeSettings(alert_min_score=4.0)
+        m, on_alert = _make_monitor(settings)
+
+        monkeypatch.setattr(
+            "src.core.monitor.evaluate_alert",
+            lambda **kwargs: _make_evaluation(score=3.0),
         )
 
         asset = _make_asset(direction="down", price=100.0)
