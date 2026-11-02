@@ -45,6 +45,9 @@ class TelegramHandlers(
     DiaryMixin,
     VirtualTradeMixin,
 ):
+    # Сколько алертов показывать на одной странице /list.
+    LIST_PAGE_SIZE = 10
+
     def __init__(
         self,
         alerts_manager: AlertsManager,
@@ -348,7 +351,10 @@ class TelegramHandlers(
                 "down": "сверху вниз 🔴",
                 "any": "любое ⚪️",
             }
-            note_display = f"\n📝 Сетап: <code>{clean_note}</code>" if clean_note else ""
+            note_display = (
+                f"\n📝 Сетап: <code>{html_escape(clean_note)}</code>"
+                if clean_note else ""
+            )
             if success:
                 verb = "Обновлено" if replaced else "Добавлено"
                 await update.message.reply_text(
@@ -387,7 +393,9 @@ class TelegramHandlers(
         )
 
         dir_text = {"up": "снизу вверх 🟢", "down": "сверху вниз 🔴", "any": "любое ⚪️"}
-        note_display = f"\n📝 Сетап: <code>{note}</code>" if note else ""
+        note_display = (
+            f"\n📝 Сетап: <code>{html_escape(note)}</code>" if note else ""
+        )
 
         if success:
             verb = "Обновлено" if replaced else "Добавлено"
@@ -430,10 +438,15 @@ class TelegramHandlers(
                 else:
                     success_count += 1
             else:
-                failed_details.append(f"• {p.raw} (не сохранилось)")
+                failed_details.append(
+                    f"• {html_escape(p.raw)} (не сохранилось)"
+                )
 
         for s in result.skipped:
-            failed_details.append(f"• строка {s.line_no}: {s.raw} — {s.reason}")
+            failed_details.append(
+                f"• строка {s.line_no}: {html_escape(s.raw)} — "
+                f"{html_escape(s.reason)}"
+            )
 
         report = "📊 <b>Результат:</b>\n"
         report += f"✅ Добавлено: <b>{success_count}</b>\n"
@@ -491,6 +504,14 @@ class TelegramHandlers(
 
         elif data == "menu_list":
             await self._show_list(update, context)
+
+        elif data.startswith("list_page|"):
+            raw = data.split("|", 1)[1]
+            try:
+                page = int(raw)
+            except ValueError:
+                page = 0
+            await self._show_list(update, context, page=page)
 
         elif data == "menu_help":
             await self._show_help(update)
@@ -1013,18 +1034,24 @@ class TelegramHandlers(
 
     async def _handle_delete_alert(self, update: Update, data: str):
         """
-        Удаление одного алерта. Формат: del|SYMBOL|PRICE|DIRECTION.
+        Удаление одного алерта. Формат: del|SYMBOL|PRICE|DIRECTION[|PAGE].
 
-        Исходное сообщение алерта не редактируется по тексту,
-        но у него убирается клавиатура (чтобы кнопки нельзя было нажать повторно).
-        Статус — отдельным сообщением.
+        Если передан PAGE (удаление из списка), список перерисовывается
+        на той же странице. Иначе исходное сообщение алерта не редактируется
+        по тексту, но у него убирается клавиатура.
         """
         query = update.callback_query
         parts = data.split("|")
-        if len(parts) != 4:
+        if len(parts) not in (4, 5):
             await query.answer("Ошибка формата", show_alert=True)
             return
-        _, symbol, price_str, direction = parts
+        _, symbol, price_str, direction = parts[:4]
+        page: int | None = None
+        if len(parts) == 5:
+            try:
+                page = int(parts[4])
+            except ValueError:
+                page = None
         try:
             price = float(price_str)
         except ValueError:
@@ -1033,6 +1060,11 @@ class TelegramHandlers(
 
         removed = self.alerts_manager.remove_alert(symbol, price, direction)
         if removed:
+            if page is not None:
+                await query.answer("🗑 Удалён")
+                await self._show_list(update, None, page=page)
+                return
+
             # Убираем клавиатуру у алерта — кнопки уже неактуальны.
             try:
                 await query.edit_message_reply_markup(reply_markup=None)
@@ -1052,29 +1084,56 @@ class TelegramHandlers(
 
     # ==================== ЭКРАНЫ ====================
 
-    async def _show_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Список всех алертов."""
+    async def _show_list(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE | None,
+        page: int = 0,
+    ):
+        """Список алертов с пагинацией по 10 штук."""
         assets = self.alerts_manager.get_all_alerts()
+        rows = [
+            (asset.symbol, alert.price, alert.direction, alert.setup_note or "")
+            for asset in assets
+            for alert in asset.alerts
+        ]
+        total = len(rows)
 
-        if not assets:
+        if total == 0:
             text = "📋 <b>Пусто</b>"
             keyboard = self._main_menu_kb()
         else:
-            dir_text = {"up": "🟢", "down": "🔴", "any": "⚪️"}
-            total = sum(len(a.alerts) for a in assets)
-            text = f"📋 <b>Алерты</b> ({total} шт.)\n\n"
-            keyboard = keyboards.alerts_list_keyboard(assets)
+            per_page = self.LIST_PAGE_SIZE
+            pages = max(1, math.ceil(total / per_page))
+            page = max(0, min(page, pages - 1))
+            chunk = rows[page * per_page:(page + 1) * per_page]
 
-            for asset in assets:
-                text += f"🪙 <b>{asset.symbol}</b>\n"
-                for alert in asset.alerts:
-                    note_escaped = html_escape(alert.setup_note or "")
-                    note_display = f" | 📝 <i>{note_escaped}</i>" if note_escaped else ""
-                    text += (
-                        f"   • {alert.price:,.4f} "
-                        f"{dir_text.get(alert.direction, '')}{note_display}\n"
-                    )
-                text += "\n"
+            text = (
+                f"📋 <b>Алерты</b> · стр. {page + 1}/{pages} · "
+                f"всего {total}\n\n"
+            )
+            dir_text = {"up": "🟢", "down": "🔴", "any": "⚪️"}
+            current_symbol: str | None = None
+            for symbol, price, direction, note in chunk:
+                if symbol != current_symbol:
+                    if current_symbol is not None:
+                        text += "\n"
+                    text += f"🪙 <b>{symbol}</b>\n"
+                    current_symbol = symbol
+                note_escaped = html_escape(note)
+                note_display = (
+                    f" | 📝 <i>{note_escaped}</i>" if note_escaped else ""
+                )
+                text += (
+                    f"   • {price:,.4f} "
+                    f"{dir_text.get(direction, '')}{note_display}\n"
+                )
+
+            keyboard = keyboards.alerts_list_keyboard(
+                [(symbol, price, direction) for symbol, price, direction, _ in chunk],
+                page,
+                pages,
+            )
 
         try:
             if update.callback_query:

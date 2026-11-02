@@ -3,6 +3,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -23,6 +24,10 @@ class ScreenerMixin:
       - self._main_menu_kb()  (из CommonMixin)
     """
 
+    # Сколько символов показывать в «Текущих ценах» за один раз:
+    # защита от превышения лимита Telegram (4096 символов).
+    MAX_PRICES = 30
+
     async def _handle_current_prices(self, update: Update):
         """Показывает текущие цены по всем отслеживаемым активам."""
         query = update.callback_query
@@ -41,25 +46,40 @@ class ScreenerMixin:
 
         text = "💰 <b>Текущие цены:</b>\n\n"
         symbols = list({a.symbol for a in assets})
+        shown = symbols[: self.MAX_PRICES]
 
-        for symbol in symbols:
-            try:
-                category = next(
-                    (a.category for a in assets if a.symbol == symbol), "linear"
-                )
-                ticker = self.bybit_client.get_ticker(symbol, category)
-                if ticker:
-                    price_str = (
-                        f"{ticker.price:,.4f}"
-                        if ticker.price < 1000
-                        else f"{ticker.price:,.2f}"
+        def _collect() -> str:
+            """Синхронные HTTP-запросы — только в отдельном потоке."""
+            out = ""
+            for symbol in shown:
+                try:
+                    category = next(
+                        (a.category for a in assets if a.symbol == symbol), "linear"
                     )
-                    text += f"🪙 <b>{symbol}</b>: <code>{price_str}</code> $\n"
-                else:
-                    text += f"🪙 <b>{symbol}</b>: ❌ нет данных\n"
-            except Exception as e:
-                logger.error(f"Ошибка получения цены {symbol}: {e}")
-                text += f"🪙 <b>{symbol}</b>: ⚠️ ошибка\n"
+                    ticker = self.bybit_client.get_ticker(symbol, category)
+                    if ticker:
+                        price_str = (
+                            f"{ticker.price:,.4f}"
+                            if ticker.price < 1000
+                            else f"{ticker.price:,.2f}"
+                        )
+                        out += (
+                            f"🪙 <b>{symbol}</b>: "
+                            f"<code>{price_str}</code> $\n"
+                        )
+                    else:
+                        out += f"🪙 <b>{symbol}</b>: ❌ нет данных\n"
+                except Exception as e:
+                    logger.error(f"Ошибка получения цены {symbol}: {e}")
+                    out += f"🪙 <b>{symbol}</b>: ⚠️ ошибка\n"
+            return out
+
+        text += await asyncio.to_thread(_collect)
+        if len(symbols) > self.MAX_PRICES:
+            text += (
+                f"\n…и ещё {len(symbols) - self.MAX_PRICES} символов "
+                f"(лимит {self.MAX_PRICES} за раз)"
+            )
 
         try:
             await query.edit_message_text(

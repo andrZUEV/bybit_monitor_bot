@@ -62,14 +62,19 @@ def setup_logging():
 
 # ==================== ГЛАВНАЯ ЛОГИКА ====================
 
-def on_alert_callback(event: AlertEvent):
-    """Callback-функция, которую вызывает Monitor при срабатывании алерта."""
+def on_alert_callback(event: AlertEvent) -> bool:
+    """Callback-функция, которую вызывает Monitor при срабатывании алерта.
+
+    Возвращает True, если Telegram подтвердил доставку. По False монитор
+    не ставит обычный кулдаун и повторит попытку позже.
+    """
     logger = logging.getLogger(__name__)
     logger.info(f"🔔 Сработал алерт: {event.symbol} ({event.event_type})")
-    
+
     success = telegram_bot.send_alert(event.message, reply_markup=event.reply_markup)
     if not success:
         logger.error("❌ Не удалось отправить алерт в Telegram")
+    return success
 
 
 def main():

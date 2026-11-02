@@ -71,6 +71,10 @@ VOLUME_PERIODS = 20
 KLINES_1H_TTL = 3600
 KLINES_1D_TTL = 86400
 
+# Короткий кулдаун после неудачной отправки в Telegram (секунды).
+# Даёт повторную попытку, но не долбит API на каждом тике.
+TELEGRAM_FAILURE_COOLDOWN = 60
+
 
 # ==================== DTO ====================
 
@@ -104,7 +108,7 @@ class Monitor:
     def __init__(
         self,
         alerts_manager: AlertsManager,
-        on_alert_callback: Callable[[AlertEvent], None],
+        on_alert_callback: Callable[[AlertEvent], bool],
         bybit_client: BybitClient | None = None,
         # REST-fallback:
         poll_interval: float = 4.0,
@@ -250,7 +254,12 @@ class Monitor:
                     logger.debug(
                         f"⏭️ Алерт ПРОПУЩЕН (кулдаун): {asset.symbol} @ {target}"
                     )
-                    state.triggered_alerts[alert_key] = True
+                    # После сбоя отправки действует короткий кулдаун:
+                    # флаг не поднимаем, иначе повторная попытка не случится.
+                    if not self.cooldown_manager.short_cooldown_active(
+                        asset.symbol, target, direction
+                    ):
+                        state.triggered_alerts[alert_key] = True
                     continue
 
                 # 2. Получаем свечи и объём ТОЛЬКО если не в кулдауне
@@ -314,29 +323,20 @@ class Monitor:
                     else:
                         skip_reason = "unknown"
 
-                    # Пишем AlertRecord ВСЕГДА — даже «слабый сигнал».
-                    try:
-                        record = build_alert_record(
+                    # Пропускаем отправку, если гейты не пропустили.
+                    # Такие алерты всё равно пишем в историю — для анализа.
+                    if not should_send:
+                        self._record_alert(
                             evaluation=evaluation,
                             symbol=asset.symbol,
                             level=target,
                             direction=direction,
                             current_price=curr,
-                            alert_age_hours=evaluation.get("age_hours", 0.0),
                             volume_ratio=volume_ratio,
-                            was_sent=should_send,
+                            was_sent=False,
                             skip_reason=skip_reason,
                             strategy_pass=strategy_pass,
                         )
-                        self.alert_history.append(record)
-                    except Exception as e:
-                        logger.error(
-                            f"⚠️ Не удалось записать AlertRecord: {e}",
-                            exc_info=True,
-                        )
-
-                    # Пропускаем отправку, если гейты не пропустили.
-                    if not should_send:
                         logger.info(
                             f"⏭️ Алерт НЕ ОТПРАВЛЕН ({skip_reason}): "
                             f"{asset.symbol} @ {target} "
@@ -345,15 +345,6 @@ class Monitor:
                         )
                         state.triggered_alerts[alert_key] = True
                         continue
-                    # ----- Reversal diary: записываем pending -----
-                    self._maybe_create_diary_pending(
-                        evaluation=evaluation,
-                        symbol=asset.symbol,
-                        level=target,
-                        direction=direction,
-                        candle_ts=evaluation.get("candle_ts", 0),
-                        hard_filter=hard_filter,
-                    )
                     # --- Отправка ---
                     probability_line = self._build_probability_line(
                         evaluation, asset.symbol, direction,
@@ -421,23 +412,103 @@ class Monitor:
                         reply_markup=alert_keyboard,
                     )
 
-                    self.on_alert(event)
-                    self.cooldown_manager.mark_sent(asset.symbol, target, direction)
-                    logger.info(
-                        f"🔔 Алерт ОТПРАВЛЕН: {asset.symbol} @ {target} "
-                        f"(Score: {evaluation['score']}"
-                        + (f", hard_filter={hard_filter}" if hard_filter else "")
-                        + ")"
+                    sent = False
+                    try:
+                        sent = bool(self.on_alert(event))
+                    except Exception as e:
+                        logger.error(
+                            f"Ошибка отправки алерта {asset.symbol}@{target}: {e}",
+                            exc_info=True,
+                        )
+
+                    if sent:
+                        self.cooldown_manager.mark_sent(
+                            asset.symbol, target, direction
+                        )
+                        state.triggered_alerts[alert_key] = True
+                        skip_reason = None
+                        # Дневник разворотов — только по доставленным алертам.
+                        self._maybe_create_diary_pending(
+                            evaluation=evaluation,
+                            symbol=asset.symbol,
+                            level=target,
+                            direction=direction,
+                            candle_ts=evaluation.get("candle_ts", 0),
+                            hard_filter=hard_filter,
+                        )
+                        logger.info(
+                            f"🔔 Алерт ОТПРАВЛЕН: {asset.symbol} @ {target} "
+                            f"(Score: {evaluation['score']}"
+                            + (f", hard_filter={hard_filter}" if hard_filter else "")
+                            + ")"
+                        )
+                    else:
+                        # Пользователь алерт не получил — обычный кулдаун не
+                        # ставим. Короткий кулдаун защищает API от долбёжки,
+                        # после него будет новая попытка.
+                        self.cooldown_manager.mark_sent(
+                            asset.symbol, target, direction,
+                            seconds=TELEGRAM_FAILURE_COOLDOWN,
+                        )
+                        skip_reason = "telegram_error"
+                        logger.error(
+                            f"❌ Алерт не доставлен: {asset.symbol} @ {target}; "
+                            f"повтор через {TELEGRAM_FAILURE_COOLDOWN}s"
+                        )
+
+                    self._record_alert(
+                        evaluation=evaluation,
+                        symbol=asset.symbol,
+                        level=target,
+                        direction=direction,
+                        current_price=curr,
+                        volume_ratio=volume_ratio,
+                        was_sent=sent,
+                        skip_reason=skip_reason,
+                        strategy_pass=strategy_pass,
                     )
                 else:
                     logger.warning(
                         f"⚠️ Не удалось получить данные для анализа: {asset.symbol}"
                     )
-
-                # Ставим флаг, чтобы не дёргать API повторно, пока цена не отойдёт
-                state.triggered_alerts[alert_key] = True
+                    # Флаг ставим, чтобы не дёргать API на каждом тике.
+                    state.triggered_alerts[alert_key] = True
 
     # ==================== REVERSAL DIARY ====================
+
+    def _record_alert(
+        self,
+        *,
+        evaluation: dict,
+        symbol: str,
+        level: float,
+        direction: str,
+        current_price: float,
+        volume_ratio: float,
+        was_sent: bool,
+        skip_reason: str | None,
+        strategy_pass: bool,
+    ) -> None:
+        """Пишет AlertRecord в историю. Ошибки записи не роняют мониторинг."""
+        try:
+            record = build_alert_record(
+                evaluation=evaluation,
+                symbol=symbol,
+                level=level,
+                direction=direction,
+                current_price=current_price,
+                alert_age_hours=evaluation.get("age_hours", 0.0),
+                volume_ratio=volume_ratio,
+                was_sent=was_sent,
+                skip_reason=skip_reason,
+                strategy_pass=strategy_pass,
+            )
+            self.alert_history.append(record)
+        except Exception as e:
+            logger.error(
+                f"⚠️ Не удалось записать AlertRecord: {e}",
+                exc_info=True,
+            )
 
     def _maybe_create_diary_pending(
         self,

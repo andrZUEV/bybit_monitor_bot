@@ -47,32 +47,55 @@ def cancel_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
-def alerts_list_keyboard(assets: list) -> InlineKeyboardMarkup:
+def alerts_list_keyboard(
+    rows: list[tuple[str, float, str]],
+    page: int = 0,
+    pages: int = 1,
+) -> InlineKeyboardMarkup:
     """
-    Клавиатура со списком алертов для удаления.
-    Для каждого актива:
-      - кнопка «удалить все»
-      - отдельные кнопки на каждый алерт
+    Клавиатура для одной страницы списка алертов.
+
+    rows: [(symbol, price, direction)] — только алерты текущей страницы.
+    Для каждого символа на странице добавляется кнопка «удалить все»,
+    плюс кнопки навигации ←/→ и возврат в меню.
     """
-    keyboard = []
+    keyboard: list[list[InlineKeyboardButton]] = []
     dir_emoji = {"up": "🟢", "down": "🔴", "any": "⚪️"}
+    seen_symbols: set[str] = set()
 
-    for asset in assets:
-        # Кнопка «удалить все» — компактнее, чем список всех
-        keyboard.append([
-            InlineKeyboardButton(
-                f"🗑 Удалить все алерты {asset.symbol}",
-                callback_data=f"del_all_{asset.symbol}",
-            )
-        ])
+    for symbol, price, direction in rows:
+        if symbol not in seen_symbols:
+            seen_symbols.add(symbol)
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"🗑 Удалить все алерты {symbol}",
+                    callback_data=f"del_all_{symbol}",
+                )
+            ])
 
-        for alert in asset.alerts:
-            emoji = dir_emoji.get(alert.direction, "❓")
-            label = f"   {emoji} {asset.symbol} @ {alert.price:,.2f}"
-            callback = f"del|{asset.symbol}|{alert.price}|{alert.direction}"
-            keyboard.append([InlineKeyboardButton(label, callback_data=callback)])
+        emoji = dir_emoji.get(direction, "❓")
+        label = f"   {emoji} {symbol} @ {price:,.2f}"
+        callback = f"del|{symbol}|{price}|{direction}|{page}"
+        keyboard.append([InlineKeyboardButton(label, callback_data=callback)])
 
-    keyboard.append([InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")])
+    if pages > 1:
+        nav: list[InlineKeyboardButton] = []
+        if page > 0:
+            nav.append(InlineKeyboardButton(
+                "← Назад", callback_data=f"list_page|{page - 1}",
+            ))
+        nav.append(InlineKeyboardButton(
+            f"стр. {page + 1}/{pages}", callback_data=f"list_page|{page}",
+        ))
+        if page + 1 < pages:
+            nav.append(InlineKeyboardButton(
+                "Вперёд →", callback_data=f"list_page|{page + 1}",
+            ))
+        keyboard.append(nav)
+
+    keyboard.append([
+        InlineKeyboardButton("🏠 Главное меню", callback_data="menu_main")
+    ])
     return InlineKeyboardMarkup(keyboard)
 
 

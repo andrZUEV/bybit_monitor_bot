@@ -35,6 +35,9 @@ class CooldownManager:
         self.storage_path = Path(storage_path)
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
         self.cooldowns: dict[str, float] = {}
+        # Короткие кулдауны (после сбоя отправки) не переживают рестарт:
+        # это защита от долбёжки API, а не часть постоянного состояния.
+        self._short_until: dict[str, float] = {}
         self._lock = threading.RLock()
         self.load()
     
@@ -110,35 +113,63 @@ class CooldownManager:
     def can_send(self, symbol: str, price: float, direction: str) -> bool:
         """
         Проверяет, можно ли отправить алерт (не в кулдауне).
+        Учитывает и обычный, и короткий (после сбоя Telegram) кулдаун.
         Потокобезопасно.
         """
         key = self._make_key(symbol, price, direction)
         with self._lock:
+            now = time.time()
+            if self._short_until.get(key, 0) > now:
+                return False
             last_sent = self.cooldowns.get(key, 0)
-            return (time.time() - last_sent) >= self.cooldown_seconds
-    
-    def mark_sent(self, symbol: str, price: float, direction: str):
+            return (now - last_sent) >= self.cooldown_seconds
+
+    def mark_sent(
+        self,
+        symbol: str,
+        price: float,
+        direction: str,
+        seconds: float | None = None,
+    ):
         """
         Помечает алерт как отправленный (запускает кулдаун).
+
+        seconds=None — обычный cooldown_seconds.
+        seconds=N    — короткий кулдаун на N секунд (например, после
+                       неудачной отправки в Telegram), без записи в
+                       основной словарь: после него будет новая попытка.
         Потокобезопасно.
         """
         key = self._make_key(symbol, price, direction)
         with self._lock:
-            self.cooldowns[key] = time.time()
+            if seconds is not None:
+                self._short_until[key] = time.time() + max(0.0, float(seconds))
+            else:
+                self._short_until.pop(key, None)
+                self.cooldowns[key] = time.time()
         self.save()
-    
+
+    def short_cooldown_active(
+        self, symbol: str, price: float, direction: str
+    ) -> bool:
+        """True, если сейчас действует короткий кулдаун после сбоя отправки."""
+        key = self._make_key(symbol, price, direction)
+        with self._lock:
+            return self._short_until.get(key, 0) > time.time()
+
     def reset(self, symbol: str, price: float, direction: str):
         """Сбрасывает кулдаун для конкретного алерта"""
         key = self._make_key(symbol, price, direction)
         with self._lock:
-            if key in self.cooldowns:
-                del self.cooldowns[key]
+            self.cooldowns.pop(key, None)
+            self._short_until.pop(key, None)
         self.save()
-    
+
     def clear_all(self):
         """Очищает все кулдауны"""
         with self._lock:
             self.cooldowns = {}
+            self._short_until = {}
         self.save()
     
     def get_stats(self) -> dict[str, Any]:

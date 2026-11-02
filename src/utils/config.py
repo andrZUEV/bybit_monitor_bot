@@ -144,10 +144,11 @@ class Config:
     )
 
     # Слать ли hard-filter-алерты (⛔ СДЕЛКА НЕ ПО СТРАТЕГИИ).
-    # True — шлём всё (включая hard_filter), False — только валидные сделки.
-    # По умолчанию True — обратная совместимость.
+    # False (по умолчанию) — шлём только сетапы, прошедшие стратегию;
+    # invalid/None всё равно пишутся в alert_history для анализа.
+    # True — режим отладки: слать всё, включая hard_filter.
     SEND_INVALID_ALERTS_DEFAULT: bool = os.getenv(
-        "SEND_INVALID_ALERTS", "true"
+        "SEND_INVALID_ALERTS", "false"
     ).strip().lower() in ("1", "true", "yes", "on")
 
     # ==================== Лимиты свечей ====================

@@ -52,7 +52,7 @@ class TestSaveLoad:
         data = json.loads(p.read_text(encoding="utf-8"))
         # Без строгого ==, чтобы новые поля не роняли тест.
         assert data["alert_min_score"] == 1.5
-        assert data["send_invalid_alerts"] is True
+        assert data["send_invalid_alerts"] is False
         assert data["alert_history_depth"] == 10000
         assert data["level_scan_enabled"] is True
         assert data["level_scan_hours_utc"] == "6,18"
@@ -130,10 +130,10 @@ class TestLockIsSet:
         assert s._lock is not None
 
 class TestSendInvalidAlerts:
-    def test_default_true(self):
+    def test_default_false(self):
         s = RuntimeSettings()
-        assert s.send_invalid_alerts is True
-        assert s.describe_invalid() == "ВКЛ"
+        assert s.send_invalid_alerts is False
+        assert s.describe_invalid() == "ВЫКЛ"
 
     def test_describe_off(self):
         s = RuntimeSettings(send_invalid_alerts=False)
@@ -157,13 +157,13 @@ class TestSendInvalidAlerts:
         loaded = RuntimeSettings.load(p)
         assert loaded.send_invalid_alerts is False
 
-    def test_load_missing_field_defaults_true(self, tmp_path: Path):
-        """Старый файл без send_invalid_alerts — читается как True."""
+    def test_load_missing_field_defaults_false(self, tmp_path: Path):
+        """Старый файл без send_invalid_alerts — читается как False."""
         p = tmp_path / "settings.json"
         p.write_text(json.dumps({"alert_min_score": -5.0}), encoding="utf-8")
 
         loaded = RuntimeSettings.load(p)
-        assert loaded.send_invalid_alerts is True
+        assert loaded.send_invalid_alerts is False
 
     @pytest.mark.parametrize("raw,expected", [
         (True, True),

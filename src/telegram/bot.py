@@ -12,6 +12,7 @@ import json
 import logging
 import sys
 import threading
+import time
 
 import requests
 from telegram.error import TimedOut
@@ -162,8 +163,9 @@ class TelegramBot:
         """
         Отправляет сообщение в Telegram (можно вызывать из любого потока).
 
-        Использует прямой HTTP-запрос, а не Application, чтобы не зависеть
-        от event loop. Это позволяет вызывать метод из Monitor без проблем.
+        Две попытки: при сетевой ошибке/429 ждём 1–2 с и повторяем.
+        На 400 (например, битый HTML) не ретраим — это не лечится повтором.
+        В логи не попадает URL с токеном: только тип исключения.
         """
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         payload = {
@@ -180,20 +182,65 @@ class TelegramBot:
             else:
                 payload["reply_markup"] = json.dumps(reply_markup)
 
-        try:
-            response = requests.post(url, data=payload, timeout=10)
-            data = response.json()
+        for attempt in (1, 2):
+            try:
+                response = requests.post(url, data=payload, timeout=10)
+                try:
+                    data = response.json()
+                except ValueError:
+                    logger.error(
+                        "Ошибка отправки: не-JSON ответ (HTTP %s)",
+                        response.status_code,
+                    )
+                    if attempt == 1:
+                        time.sleep(1.0)
+                        continue
+                    return False
 
-            if data.get("ok"):
-                logger.debug("Сообщение успешно отправлено в Telegram")
-                return True
+                if data.get("ok"):
+                    logger.debug("Сообщение успешно отправлено в Telegram")
+                    return True
 
-            logger.error(f"Ошибка отправки: {data.get('description')}")
-            return False
+                if response.status_code == 429:
+                    retry_after = 1
+                    params = data.get("parameters") or {}
+                    try:
+                        retry_after = int(params.get("retry_after", 1))
+                    except (TypeError, ValueError):
+                        retry_after = 1
+                    wait = max(1, min(retry_after, 2))
+                    logger.warning(
+                        "Telegram 429: повтор через %s с (попытка %s/2)",
+                        wait, attempt,
+                    )
+                    if attempt == 1:
+                        time.sleep(wait)
+                        continue
+                    return False
 
-        except Exception as e:
-            logger.error(f"Ошибка отправки алерта: {e}")
-            return False
+                logger.error(
+                    "Ошибка отправки: %s", data.get("description", "unknown")
+                )
+                return False
+
+            except requests.exceptions.RequestException as e:
+                if attempt == 2:
+                    logger.error(
+                        "Ошибка отправки алерта: %s", type(e).__name__
+                    )
+                    return False
+                logger.warning(
+                    "Сетевая ошибка отправки (%s), повтор через 1 с",
+                    type(e).__name__,
+                )
+                time.sleep(1.0)
+            except Exception as e:
+                logger.error(
+                    "Ошибка отправки алерта: %s", type(e).__name__
+                )
+                return False
+
+        return False
 
 
 # ==================== ТЕСТ ====================

@@ -46,7 +46,9 @@ def _default_send_invalid() -> bool:
 class RuntimeSettings:
     """Настройки, которые можно менять без рестарта бота."""
     alert_min_score: float = DEFAULT_MIN_SCORE
-    send_invalid_alerts: bool = True
+    # False — шлём только сетапы без hard filter; invalid/None идут
+    # только в историю. True — отладочный режим «слать всё».
+    send_invalid_alerts: bool = False
     alert_history_depth: int = 10000
 
     # --- Level scanner (Этап 6) ---
@@ -85,8 +87,8 @@ class RuntimeSettings:
         min_score_raw = data.get("alert_min_score", DEFAULT_MIN_SCORE)
         min_score = cls._parse_score(min_score_raw, default=DEFAULT_MIN_SCORE)
 
-        send_invalid_raw = data.get("send_invalid_alerts", True)
-        send_invalid = cls._parse_bool(send_invalid_raw, default=True)
+        send_invalid_raw = data.get("send_invalid_alerts", False)
+        send_invalid = cls._parse_bool(send_invalid_raw, default=False)
         depth_raw = data.get("alert_history_depth", 10000)
         depth = cls._parse_depth(depth_raw, default=10000)
 

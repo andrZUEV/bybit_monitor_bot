@@ -14,6 +14,10 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+# Максимальная длина заметки к алерту: защита alerts.json от раздувания
+# и от вставки мегабайтного текста через Telegram.
+MAX_NOTE_LENGTH = 500
+
 
 @dataclass
 class AlertRule:
@@ -205,7 +209,11 @@ class AlertsManager:
         if direction not in ['up', 'down', 'any']:
             return False, False
         
-        new_rule = AlertRule(price=float(price), direction=direction, setup_note=setup_note.strip())
+        new_rule = AlertRule(
+            price=float(price),
+            direction=direction,
+            setup_note=(setup_note or "").strip()[:MAX_NOTE_LENGTH],
+        )
         
         with self._lock:
             for asset in self.assets:
