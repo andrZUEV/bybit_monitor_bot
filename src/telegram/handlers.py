@@ -384,9 +384,19 @@ class TelegramHandlers(
         )
 
     async def _finalize_add_alert(
-        self, update: Update, state: dict[str, Any], note: str, chat_id: int
+        self,
+        update: Update,
+        state: dict[str, Any],
+        note: str,
+        chat_id: int,
+        *,
+        from_callback: bool = False,
     ):
-        """Завершает добавление алерта после выбора направления и заметки."""
+        """Завершает добавление алерта после выбора направления и заметки.
+
+        from_callback=True — пришли кнопкой «Пропустить заметку»: отвечаем
+        не в `update.message` (его нет у callback'а), а в сообщение запроса.
+        """
         symbol = state["symbol"]
         price = state["price"]
         direction = state["direction"]
@@ -399,10 +409,15 @@ class TelegramHandlers(
         note_display = (
             f"\n📝 Сетап: <code>{html_escape(note)}</code>" if note else ""
         )
+        messenger = (
+            update.callback_query.message
+            if from_callback and update.callback_query is not None
+            else update.message
+        )
 
         if success:
             verb = "Обновлено" if replaced else "Добавлено"
-            await update.message.reply_text(
+            await messenger.reply_text(
                 f"✅ <b>{verb}:</b>\n"
                 f"🪙 {symbol}\n💰 {price:,.2f}\n"
                 f"🎯 {dir_text.get(direction, direction)}{note_display}",
@@ -410,7 +425,7 @@ class TelegramHandlers(
                 reply_markup=self._main_menu_kb(),
             )
         else:
-            await update.message.reply_text(
+            await messenger.reply_text(
                 "⚠️ Не удалось сохранить алерт",
                 reply_markup=self._main_menu_kb(),
             )
@@ -637,9 +652,25 @@ class TelegramHandlers(
             await query.edit_message_text(
                 f"✅ Направление: <b>{direction}</b>\n\n"
                 f"Введите заметку (например, «пробой сопротивления»)\n"
-                f"Или отправьте <code>-</code>, чтобы пропустить.",
+                f"Или отправьте <code>-</code> или нажмите кнопку ниже, "
+                f"чтобы пропустить.",
                 parse_mode="HTML",
-                reply_markup=keyboards.cancel_keyboard(),
+                reply_markup=keyboards.skip_note_keyboard(),
+            )
+
+        # ========== Пропустить заметку (кнопка) ==========
+        elif data == "skip_note":
+            state = self.user_state.get(chat_id, {})
+            if state.get("step") != "waiting_note":
+                await query.answer("Сессия истекла, начните заново", show_alert=True)
+                return
+            # Убираем клавиатуру у сообщения-запроса, чтобы не нажать дважды.
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            await self._finalize_add_alert(
+                update, state, "", chat_id, from_callback=True,
             )
 
         # ========== Скринер: добавить алерт ==========

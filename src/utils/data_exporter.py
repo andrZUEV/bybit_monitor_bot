@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 
 from src.api.bybit_client import BybitClient
-from src.utils.indicators import calculate_rsi
+from src.utils.indicators import calculate_rsi_series
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,7 @@ class DataExporter:
                     
                     # Извлекаем цены закрытия для RSI
                     closes = [float(k[4]) for k in reversed(klines)]
-                    rsi_values = calculate_rsi(closes, period=14)
+                    rsi_values = calculate_rsi_series(closes, period=14)
                     
                     # Записываем свечи (от старых к новым)
                     for i, kline in enumerate(reversed(klines)):
@@ -168,7 +168,7 @@ class DataExporter:
                             continue
                         
                         closes = [float(k[4]) for k in reversed(klines)]
-                        rsi_values = calculate_rsi(closes, period=14)
+                        rsi_values = calculate_rsi_series(closes, period=14)
                         
                         for i, kline in enumerate(reversed(klines)):
                             timestamp_ms = int(kline[0])

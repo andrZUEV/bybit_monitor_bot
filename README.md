@@ -185,6 +185,7 @@ python scripts/analyze_history.py                 # отчёт по умолча
 python scripts/analyze_history.py --last 500      # последние 500 записей
 python scripts/analyze_history.py --symbol BTCUSDT
 python scripts/analyze_history.py --json          # машинный вывод
+python scripts/smoke_telegram.py                  # живая проверка доставки в Telegram
 ```
 
 Отчёт показывает: сколько отправлено/отброшено, распределение вердиктов и
@@ -237,7 +238,7 @@ python main.py
 ## Тесты
 
 ```bash
-pytest -q                                # 620 тестов, без сети
+pytest -q                                # 807 тестов, без сети
 ruff check src tests main.py scripts
 pytest -q --cov=src --cov-report=term    # покрытие (pytest-cov)
 ```
