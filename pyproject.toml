@@ -19,6 +19,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
     "ruff>=0.5",
 ]
 
@@ -87,3 +88,19 @@ minversion = "8.0"
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-ra -q --strict-markers"
+
+# Покрытие меряем по src вручную:
+#   .venv\Scripts\python.exe -m pytest --cov=src --cov-report=term-missing:skip-covered
+# В CI coverage пока не включён — сначала нужен осмысленный базовый процент.
+[tool.coverage.run]
+source = ["src"]
+branch = false
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+    "raise NotImplementedError",
+]
+skip_covered = false
