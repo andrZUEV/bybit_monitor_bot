@@ -171,8 +171,6 @@ class RuntimeSettings:
             s._path = p
             return s
 
-        def describe_virtual_trader(self) -> str:
-            return "ВКЛ" if self.virtual_trader_enabled else "ВЫКЛ"
     # ---------- запись ----------
 
     def save(self) -> None:

@@ -7,6 +7,7 @@ import logging
 
 from src.core.settings import get_settings
 from src.core.virtual_trader import get_virtual_trader
+from src.core.vt_pending import pop_vt_take
 from src.telegram import keyboards
 
 logger = logging.getLogger(__name__)
@@ -104,30 +105,38 @@ class VirtualTradeMixin:
     async def _handle_take_to_diary(self, query, data: str):
         """
         Кнопка [📝 Взять в дневник] под алертом.
-        data = "vt_take|SYMBOL|ENTRY|SL|TP1|TP2|DIRECTION"
+
+        Новый формат: vt_take|<short_id> — параметры берутся из vt_pending.
+        Старый формат (для уже отправленных сообщений):
+        vt_take|SYMBOL|ENTRY|SL|TP1|TP2|DIRECTION.
         """
         parts = data.split("|")
-        if len(parts) != 7:
+
+        if len(parts) == 2:
+            payload = pop_vt_take(parts[1])
+            if payload is None:
+                await query.answer(
+                    "Сделка устарела (бот перезапускался) — откройте алерт заново",
+                    show_alert=True,
+                )
+                return
+            symbol, entry, sl, tp1, tp2, direction = payload
+        elif len(parts) == 7:
+            _, symbol, entry_s, sl_s, tp1_s, tp2_s, direction = parts
+            try:
+                entry = float(entry_s)
+                sl = float(sl_s)
+                tp1 = float(tp1_s)
+                tp2 = float(tp2_s) if tp2_s else None
+            except ValueError:
+                await query.answer("Ошибка парсинга", show_alert=True)
+                return
+        else:
             await query.answer("Ошибка формата", show_alert=True)
             return
-            
-        _, symbol, entry_s, sl_s, tp1_s, tp2_s, direction = parts
-        try:
-            entry = float(entry_s)
-            sl = float(sl_s)
-            tp1 = float(tp1_s)
-            tp2 = float(tp2_s) if tp2_s else 0.0
-        except ValueError:
-            await query.answer("Ошибка парсинга", show_alert=True)
-            return
 
-        # Проверяем, была ли метка о риске. 
-        # В мониторе мы ставим "⚠️" если risk.valid == False
-        # Но здесь мы не знаем, нажал ли он на ⚠️ или на обычную.
-        # Проще: мы всегда создаем сделку, но если entry == sl (аномалия), отсеиваем.
-        
         tps = [tp1]
-        if tp2 > 0:
+        if tp2 is not None and tp2 > 0:
             tps.append(tp2)
 
         s = get_settings()

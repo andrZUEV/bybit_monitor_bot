@@ -237,52 +237,6 @@ def is_mirror_level(
         and from_below >= mirror_min_side_touches
     )
 
-    def count_sides(slc: list[dict[str, float]]) -> tuple[int, int]:
-        """(подходы_сверху, подходы_снизу) для среза свечей."""
-        from_above = 0
-        from_below = 0
-        for c in slc:
-            # Свеча «касалась» зоны
-            if c["high"] < zone_low or c["low"] > zone_high:
-                continue
-            if c["close"] > zone_high:
-                from_above += 1
-            elif c["close"] < zone_low:
-                from_below += 1
-        return from_above, from_below
-
-    mid = n // 2
-    fresh = candles[:mid]     # свежие
-    old = candles[mid:]       # старые
-
-    fa, fb = count_sides(fresh)
-    oa, ob = count_sides(old)
-
-    # Зеркальность: в одной половине преобладает один тип, в другой — другой.
-    fresh_dominant = (
-        "above" if fa > fb else "below" if fb > fa else "none"
-    )
-    old_dominant = (
-        "above" if oa > ob else "below" if ob > oa else "none"
-    )
-
-    if fresh_dominant == "none" or old_dominant == "none":
-        return False
-    if fresh_dominant == old_dominant:
-        return False
-
-    # Требуем минимум `mirror_min_side_touches` касаний в доминирующей
-    # стороне каждой половины. Идея: раньше цена тестировала уровень
-    # с одной стороны (например, как сопротивление), теперь — с другой.
-    fresh_touches = max(fa, fb)
-    old_touches = max(oa, ob)
-    if fresh_touches < mirror_min_side_touches:
-        return False
-    if old_touches < mirror_min_side_touches:
-        return False
-
-    return True
-
 
 # ==================== ПУБЛИЧНЫЙ API ====================
 

@@ -4,6 +4,9 @@ requests==2.31.0
 # Telegram бот (версия для Python 3.12+)
 python-telegram-bot==21.6
 
+# WebSocket-клиент Bybit (нужен при USE_WEBSOCKET=true)
+websocket-client==1.9.2
+
 # Работа с .env
 python-dotenv==1.0.0
 

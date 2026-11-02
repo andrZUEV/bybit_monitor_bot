@@ -98,3 +98,46 @@ cd bybit-monitor-bot
 python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -e ".[dev]"
+```
+
+## Настройка
+
+```bash
+cp .env.example .env           # Windows: copy .env.example .env
+```
+
+Заполните в `.env`:
+
+- `TELEGRAM_BOT_TOKEN` — токен от @BotFather;
+- `TELEGRAM_CHAT_ID` — ваш chat_id (узнать у @userinfobot);
+- `EQUITY` — депозит в USDT для расчёта размера позиции.
+
+По умолчанию `SEND_INVALID_ALERTS=false`: в Telegram уходят только сетапы,
+прошедшие hard filters. Для отладки можно поставить `true` — тогда
+алерты «не по стратегии» тоже будут приходить (с плашкой ⛔).
+
+## Запуск
+
+```bash
+python main.py
+```
+
+Остановка — `Ctrl+C`. Данные (`alerts.json`, история, кулдауны) лежат в `data/`.
+
+## Тесты
+
+```bash
+pytest -q          # 550+ тестов, без сети
+ruff check src tests main.py
+```
+
+## Структура
+
+```
+main.py                 — точка входа: бот + монитор + планировщики
+src/api/                — REST и WebSocket клиенты Bybit
+src/core/               — алерты, анализ, риск, уровни, дневники
+src/telegram/           — бот, хендлеры, клавиатуры
+src/utils/              — конфиг, индикаторы, форматирование
+tests/                  — pytest, без сетевых вызовов
+```

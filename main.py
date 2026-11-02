@@ -165,6 +165,9 @@ def main():
         settings=runtime_settings,
         alert_history=alert_history,
         reversal_diary=reversal_diary,
+        # REST klines и Telegram-отправка — в отдельном потоке, чтобы
+        # не блокировать WS-приём тикеров.
+        process_inline=False,
     )
     logger.info("✅ Монитор инициализирован")
 
@@ -300,21 +303,6 @@ def main():
         time.sleep(1.5)
         logger.info("✅ Приложение успешно остановлено. До встречи!")
         print("=" * 60)
-
-    # 5.4. Планировщик виртуальных сделок
-    vt_scheduler: VirtualTraderScheduler | None = None
-    if virtual_trader is not None:
-        vt_scheduler = VirtualTraderScheduler(
-            trader=virtual_trader,
-            klines_provider=lambda sym, cat: telegram_bot.bybit_client.get_klines_cached(
-                sym, cat, "15", 200,
-            ),
-            category_provider=_category_provider,
-            interval_min=Config.VIRTUAL_TRADER_RESOLVE_INTERVAL_MIN,
-            enabled_provider=lambda: get_settings().virtual_trader_enabled,
-        )
-        vt_scheduler.start()
-        logger.info("✅ Планировщик виртуальных сделок запущен")
 
 
 if __name__ == "__main__":

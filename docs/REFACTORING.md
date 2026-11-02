@@ -290,7 +290,7 @@
 1. **`README.md`** — описание, установка, запуск, переменные
    окружения, команды бота, структура, разработка.
 
-2. **`tests/`** — pytest, без сетевых вызовов (~52 теста):
+2. **`tests/`** — pytest, без сетевых вызовов (~550 тестов):
    - `conftest.py` — фикстуры (`tmp_data_dir`, `alerts_path`,
      `cooldowns_path`, `make_monitor`, `sample_klines_newest_first`).
    - `test_indicators.py` — RSI, EMA, ATR. Зафиксировано:
@@ -442,24 +442,21 @@
 | `tests/test_monitor_klines_cache.py` | 6      |
 | `tests/test_export_1d.py`            | 3      |
 
-**Итого:** ~119 тестов, все зелёные, `ruff check .` → `All checks passed`.
+**Итого:** ~550 тестов, все зелёные, `ruff check .` → `All checks passed`.
 
 ### Известный техдолг (Этап 5+)
 
 - Уровень в `alerts.json` сейчас хранится как **точка** (`price: float`),
   а стратегия требует **зону** (`price_low`/`price_high`). Рефакторинг
   схемы данных — отдельный этап.
-- ATR считается на 15m (для стопа) и 1H (для runway). По стратегии
-  хотелось бы ещё 4H-ATR для «масштаба дня», но пока не нужно.
+- ATR: один ATR на весь план (1H, иначе 15m) — используется для стопа,
+  runway и RR. Цели TP1/TP2 берутся только из уровней 4H/1D.
 - Дивергенция RSI ищется на 15m. Для 4H/1D — потенциально полезно,
   но требует переработки `evaluate_alert` (сейчас работает только на
   рабочем ТФ).
-- `SEND_INVALID_ALERTS` — не вынесен в `Config`. Пока жёстко «отправлять».
 - Параметры `volume_threshold`, `volume_cooldown` в `Monitor` — legacy, не используются.
 - `skip_note_keyboard` — не подключена.
 - Магические числа в `analyzer.py` (пороги RSI 40/60, пин-бары 0.66/0.33) — вынести в `THRESHOLDS`.
-- Гонка при параллельных `add_alert` в `AlertsManager` (см. Этап 3).
-- `_handle_export_alert` делает REST-запросы в event loop — вынести в `asyncio.to_thread`.
 
 ---
 ## Этап 5 — Рефакторинг и буфер алертов (ЗАКРЫТ)

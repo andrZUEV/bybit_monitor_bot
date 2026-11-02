@@ -23,6 +23,7 @@
 
 import logging
 import os
+import queue
 import sys
 import threading
 import time
@@ -48,6 +49,7 @@ from src.core.reversal_diary import (
 )
 from src.core.risk import RiskConfig, risk_config_from_env
 from src.core.settings import RuntimeSettings
+from src.core.vt_pending import register_vt_take
 from src.utils.config import Config
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -127,6 +129,10 @@ class Monitor:
         settings: RuntimeSettings | None = None,
         alert_history: AlertHistory | None = None,
         reversal_diary: ReversalDiary | None = None,
+        # True — обрабатывать алерты прямо в колбэке (тесты, отладка).
+        # False — складывать в очередь и обрабатывать в отдельном потоке,
+        # чтобы REST/Telegram не блокировали WS-поток.
+        process_inline: bool = True,
     ):
         self.alerts_manager = alerts_manager
         self.on_alert = on_alert_callback
@@ -197,6 +203,14 @@ class Monitor:
         self._stop_event = threading.Event()
         self._refresh_thread: threading.Thread | None = None
 
+        # Обработка алертов вне WS-потока (REST klines + Telegram send).
+        self.process_inline = process_inline
+        self._alert_queue: queue.Queue[str | None] = queue.Queue()
+        self._pending_alerts: dict[str, tuple] = {}
+        self._pending_lock = threading.Lock()
+        self._worker_stop = threading.Event()
+        self._worker_thread: threading.Thread | None = None
+
         # REST-polling счётчик (для fallback)
         self._poll_count = 0
 
@@ -217,13 +231,22 @@ class Monitor:
     # ==================== ПРОВЕРКА ЦЕН ====================
 
     def _check_price_cross(
-        self, asset: Asset, ticker: TickerData, state: AssetState
+        self,
+        asset: Asset,
+        ticker: TickerData,
+        state: AssetState,
+        prev_price: float | None = None,
     ) -> None:
-        """Проверяет пересечения цены с уровнями алертов."""
-        if state.prev_price is None:
+        """Проверяет пересечения цены с уровнями алертов.
+
+        prev_price передаётся из WS-потока (снимок на момент тика), чтобы
+        обработка в отдельном потоке не зависела от уже обновлённого
+        state.prev_price.
+        """
+        prev = state.prev_price if prev_price is None else prev_price
+        if prev is None:
             return
 
-        prev = state.prev_price
         curr = ticker.price
 
         for rule in asset.alerts:
@@ -368,13 +391,17 @@ class Monitor:
                         and risk.stop > 0
                         and risk.tp1 > 0
                     ):
-                        tp1 = risk.tp1 if risk.tp1 else 0.0
-                        tp2 = risk.tp2 if risk.tp2 else 0.0
-                        # Формат: vt_take|SYM|ENTRY|SL|TP1|TP2|DIR
-                        cb_data = (
-                            f"vt_take|{asset.symbol}|{risk.entry}|"
-                            f"{risk.stop}|{tp1}|{tp2}|{direction}"
+                        # В callback — только короткий id: цены с плавающей
+                        # точкой не влезают в лимит Telegram (64 байта).
+                        vt_key = register_vt_take(
+                            symbol=asset.symbol,
+                            entry=risk.entry,
+                            stop=risk.stop,
+                            tp1=risk.tp1,
+                            tp2=risk.tp2,
+                            direction=direction,
                         )
+                        cb_data = f"vt_take|{vt_key}"
                         
                         # Если риск не valid — предупредим (через текст)
                         label = "📝 Взять в дневник"
@@ -704,15 +731,107 @@ class Monitor:
             self.states[symbol] = state
 
         ticker = TickerData(price=price, volume_24h=volume_24h)
-        try:
-            self._check_price_cross(asset, ticker, state)
-        except Exception as e:
-            logger.error(
-                f"Ошибка в _check_price_cross({symbol}): {e}", exc_info=True
+        self._dispatch_alert(asset, ticker, state)
+
+    def _dispatch_alert(
+        self, asset: Asset, ticker: TickerData, state: AssetState
+    ) -> None:
+        """
+        Решает, где обрабатывать алерт: в текущем потоке или в воркере.
+
+        Воркер получает снимок prev_price и последний тикер. Если по символу
+        уже есть необработанный алерт, prev_price сохраняется от самого
+        первого тика, чтобы не потерять пересечение, а тикер — самый свежий.
+        """
+        prev = state.prev_price
+
+        if self.process_inline:
+            try:
+                self._check_price_cross(
+                    asset, ticker, state, prev_price=prev
+                )
+            except Exception as e:
+                logger.error(
+                    f"Ошибка в _check_price_cross({asset.symbol}): {e}",
+                    exc_info=True,
+                )
+            state.prev_price = ticker.price
+            state.prev_volume = ticker.volume_24h
+            return
+
+        state.prev_price = ticker.price
+        state.prev_volume = ticker.volume_24h
+        if prev is not None:
+            self._enqueue_alert(asset, ticker, state, prev)
+
+    def _enqueue_alert(
+        self,
+        asset: Asset,
+        ticker: TickerData,
+        state: AssetState,
+        prev_price: float,
+    ) -> None:
+        """Ставит алерт в очередь (с коалесценцией по символу)."""
+        symbol = asset.symbol
+        with self._pending_lock:
+            existing = self._pending_alerts.get(symbol)
+            if existing is not None:
+                # Оставляем самый первый prev_price — иначе потеряем кросс.
+                self._pending_alerts[symbol] = (
+                    asset, ticker, state, existing[3],
+                )
+                return
+            self._pending_alerts[symbol] = (
+                asset, ticker, state, prev_price,
             )
 
-        state.prev_price = price
-        state.prev_volume = volume_24h
+        self._ensure_worker()
+        self._alert_queue.put(symbol)
+
+    def _ensure_worker(self) -> None:
+        with self._pending_lock:
+            if self._worker_thread is not None and self._worker_thread.is_alive():
+                return
+            self._worker_stop.clear()
+            self._worker_thread = threading.Thread(
+                target=self._alert_worker_loop,
+                name="MonitorAlertWorker",
+                daemon=True,
+            )
+            self._worker_thread.start()
+
+    def _alert_worker_loop(self) -> None:
+        while not self._worker_stop.is_set():
+            try:
+                symbol = self._alert_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            if symbol is None:
+                break
+
+            with self._pending_lock:
+                item = self._pending_alerts.pop(symbol, None)
+            if item is None:
+                continue
+
+            asset, ticker, state, prev_price = item
+            try:
+                self._check_price_cross(
+                    asset, ticker, state, prev_price=prev_price
+                )
+            except Exception as e:
+                logger.error(
+                    f"Ошибка обработки алерта {symbol}: {e}",
+                    exc_info=True,
+                )
+
+    def _stop_alert_worker(self) -> None:
+        self._worker_stop.set()
+        self._alert_queue.put(None)
+        thread = self._worker_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=5.0)
 
     # ==================== ОБНОВЛЕНИЕ ПОДПИСОК ====================
 
@@ -781,9 +900,7 @@ class Monitor:
                 continue
 
             state = self.states[symbol]
-            self._check_price_cross(asset, ticker, state)
-            state.prev_price = ticker.price
-            state.prev_volume = ticker.volume_24h
+            self._dispatch_alert(asset, ticker, state)
 
     # ==================== УПРАВЛЕНИЕ ====================
 
@@ -801,6 +918,9 @@ class Monitor:
         """
         self._running = True
         self._stop_event.clear()
+
+        if not self.process_inline:
+            self._ensure_worker()
 
         if self.use_websocket and self._ws_client is not None:
             self._start_websocket()
@@ -875,5 +995,8 @@ class Monitor:
         # Ждём refresh-поток
         if self._refresh_thread is not None and self._refresh_thread.is_alive():
             self._refresh_thread.join(timeout=5.0)
+
+        # Останавливаем воркер алертов
+        self._stop_alert_worker()
 
         logger.info("🛑 Мониторинг остановлен.")
