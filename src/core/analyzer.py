@@ -1,4 +1,4 @@
-﻿"""
+"""
 Модуль технического анализа с весами, штрафами и фильтрами контекста.
 
 Версия 4.0 (Этап 4):
@@ -306,43 +306,54 @@ def _structure_stop_15m(
     return None
 
 
+def _merge_levels(*groups: list[Level]) -> list[Level]:
+    """
+    Объединяет уровни 4H/1D: убирает изношенные и близкие дубли.
+
+    «Сильный» уровень для TP — не изношенный (is_worn=False) и с
+    минимальным числом касаний (это уже гарантирует find_levels).
+    Близкие уровни (в пределах cluster_eps_pct) схлопываются в один:
+    остаётся более сильный по strength.
+    """
+    eps = THRESHOLDS["levels_cluster_eps_pct"]
+    candidates = [lv for group in groups for lv in group if not lv.is_worn]
+    candidates.sort(key=lambda lv: lv.price)
+
+    merged: list[Level] = []
+    for lv in candidates:
+        if merged:
+            prev = merged[-1]
+            if abs(lv.price - prev.price) <= prev.price * eps:
+                if lv.strength > prev.strength:
+                    merged[-1] = lv
+                continue
+        merged.append(lv)
+    return merged
+
+
 def _find_tp_levels(
     entry: float,
     direction: str,
-    levels_4h: list[Level],
-    atr_1h: float | None,
-    min_rr: float,
-    risk: float,
-) -> tuple[float, float]:
+    levels: list[Level],
+) -> tuple[Level | None, Level | None]:
     """
-    Собирает TP1 и TP2.
+    Ближайшая и следующая цели по направлению движения.
 
-    TP1 — ближайший уровень в сторону движения, строго выше/ниже entry.
-    TP2 — следующий уровень за TP1, либо entry + min_rr × risk,
-          если уровней мало.
-
-    Гарантирует TP2 > TP1 для long и TP2 < TP1 для short.
+    TP1 — ближайший сильный уровень строго за entry.
+    TP2 — следующий за TP1 (может быть None: тогда RR считается по TP1).
+    Никаких «красивых» N×ATR: цель — только уровень.
     """
-    fallback_tp2_long = entry + min_rr * risk
-    fallback_tp2_short = entry - min_rr * risk
-
     if direction == "up":
-        tp1_level = find_level_above(levels_4h, entry)
-        tp1 = tp1_level.price if tp1_level else fallback_tp2_long
-        # следующий уровень за TP1
-        tp2_level = find_level_above(levels_4h, tp1 + 1e-9)
-        tp2 = tp2_level.price if tp2_level else max(tp1 * 1.01, fallback_tp2_long)
-        if tp2 <= tp1:
-            tp2 = max(tp1 * 1.01, fallback_tp2_long)
+        tp1 = find_level_above(levels, entry)
+        if tp1 is None:
+            return None, None
+        tp2 = find_level_above(levels, tp1.price)
         return tp1, tp2
 
-    # direction == "down"
-    tp1_level = find_level_below(levels_4h, entry)
-    tp1 = tp1_level.price if tp1_level else fallback_tp2_short
-    tp2_level = find_level_below(levels_4h, tp1 - 1e-9)
-    tp2 = tp2_level.price if tp2_level else min(tp1 * 0.99, fallback_tp2_short)
-    if tp2 >= tp1:
-        tp2 = min(tp1 * 0.99, fallback_tp2_short)
+    tp1 = find_level_below(levels, entry)
+    if tp1 is None:
+        return None, None
+    tp2 = find_level_below(levels, tp1.price)
     return tp1, tp2
 
 
@@ -711,15 +722,11 @@ def evaluate_alert(
         if direction == "any":
             filters.append("Risk не считается для direction='any'")
         else:
-            atr_15m = _calc_atr_15m(candles_15m)
             atr_1h = _calc_atr_1h(candles_1h)
+            # Один ATR на весь план: 1H, если есть, иначе рабочий 15m.
+            atr = atr_1h if (atr_1h is not None and atr_1h > 0) else atr_15m
 
-            # ATR для runway — 1h, если есть, иначе 15m
-            atr_for_runway = atr_1h if atr_1h is not None else atr_15m
-            # ATR для стопа — 15m
-            atr_for_stop = atr_15m
-
-            if atr_for_stop and atr_for_stop > 0:
+            if atr and atr > 0:
                 risk_dir = "long" if direction == "up" else "short"
                 structure_stop = _structure_stop_15m(
                     candles_15m, direction,
@@ -727,32 +734,29 @@ def evaluate_alert(
                 )
                 entry = current_price
 
-                # risk в единицах цены: |entry - structure_stop| или ATR-фолбэк
-                if structure_stop is not None:
-                    risk_per_unit = abs(entry - structure_stop)
+                tp1_level, tp2_level = _find_tp_levels(
+                    entry, direction,
+                    _merge_levels(levels_4h, levels_1d),
+                )
+
+                if tp1_level is None:
+                    # Цели нет — сделку не строим. Никаких ATR-фолбэков.
+                    risk_result = RiskResult(
+                        entry=entry, stop=0.0, tp1=0.0, tp2=None,
+                        rr=0.0, rr_tp1=0.0, size=0.0, risk_amount=0.0,
+                        runway_atr=0.0, valid=False, reason="no_target",
+                    )
                 else:
-                    risk_per_unit = atr_for_stop * risk_cfg.atr_multiplier
-                if risk_per_unit <= 0:
-                    risk_per_unit = atr_for_stop * risk_cfg.atr_multiplier
-
-                tp1, tp2 = _find_tp_levels(
-                    entry, direction, levels_4h,
-                    atr_for_runway, risk_cfg.min_rr, risk_per_unit,
-                )
-
-                # если runway считаем по atr_1h, риск для стопа по 15m,
-                # передаём в validate_setup средний ATR (для runway-проверки)
-                atr_for_validate = atr_for_runway or atr_for_stop
-                risk_result = build_setup(
-                    entry=entry,
-                    structure_stop=structure_stop,
-                    atr=atr_for_validate,
-                    direction=risk_dir,
-                    tp1=tp1,
-                    tp2=tp2,
-                    cfg=risk_cfg,
-                    trend_4h=trend_4h_dir,
-                )
+                    risk_result = build_setup(
+                        entry=entry,
+                        structure_stop=structure_stop,
+                        atr=atr,
+                        direction=risk_dir,
+                        tp1=tp1_level.price,
+                        tp2=tp2_level.price if tp2_level else None,
+                        cfg=risk_cfg,
+                        trend_4h=trend_4h_dir,
+                    )
 
                 if not risk_result.valid:
                 # Risk нашёл hard_filter, но НЕ перезатираем уже установленный worn_level
@@ -770,7 +774,7 @@ def evaluate_alert(
                             f"но hard_filter уже: {hard_filter}"
                     )
             else:
-                filters.append("ATR(15m) недоступен → risk не посчитан")
+                filters.append("ATR недоступен → risk не посчитан")
 
         atr_for_history = atr_15m   # сохраняем для AlertRecord
 
@@ -868,7 +872,10 @@ def format_alert_message(
 
     # 2. План сделки
     risk = evaluation.get("risk")
-    if risk is not None:
+    if risk is not None and risk.reason == "no_target":
+        lines.append("")
+        lines.append("📐 <b>План сделки:</b> нет цели (уровень не найден)")
+    elif risk is not None:
         lines.append("")
         lines.append("📐 <b>План сделки:</b>")
         lines.append(f"  Entry: <code>{risk.entry:,.2f}</code>")
@@ -876,9 +883,12 @@ def format_alert_message(
         lines.append(
             f"  TP1:   <code>{risk.tp1:,.2f}</code>  (RR {risk.rr_tp1:.2f})"
         )
-        lines.append(
-            f"  TP2:   <code>{risk.tp2:,.2f}</code>  (RR {risk.rr:.2f})"
-        )
+        if risk.tp2 is not None:
+            lines.append(
+                f"  TP2:   <code>{risk.tp2:,.2f}</code>  (RR {risk.rr:.2f})"
+            )
+        else:
+            lines.append(f"  RR:    {risk.rr:.2f}  (по TP1 — TP2 нет)")
         lines.append(
             f"  Size:  <code>{risk.size:.4f}</code>  "
             f"(риск ${risk.risk_amount:,.2f})"

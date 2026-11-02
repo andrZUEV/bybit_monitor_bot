@@ -222,3 +222,32 @@ def test_build_atr_invalid_short_circuits():
     assert r.valid is False
     assert r.reason == "atr_invalid"
     assert r.stop == 0.0
+
+
+# ==================== без TP2: решение по TP1 ====================
+
+def test_validate_no_tp2_uses_tp1_rr():
+    # entry=100, stop=95, tp1=115, tp2=None → RR по TP1 = 3.0
+    r = validate_setup(100.0, 95.0, 115.0, None, "long", CFG, atr=2.0)
+    assert r.tp2 is None
+    assert r.valid is True
+    assert r.reason == ""
+    assert r.rr == pytest.approx(3.0)
+    assert r.rr_tp1 == pytest.approx(3.0)
+
+
+def test_validate_no_tp2_rr_too_low():
+    # TP1 даёт RR=2.0 → ниже минимума 3.0
+    r = validate_setup(100.0, 95.0, 110.0, None, "long", CFG, atr=2.0)
+    assert r.valid is False
+    assert r.reason == "rr_below_min"
+    assert r.rr == pytest.approx(2.0)
+
+
+def test_build_setup_no_tp2():
+    r = build_setup(entry=100.0, structure_stop=None, atr=2.0,
+                    direction="long", tp1=115.0, tp2=None, cfg=CFG)
+    assert r.tp2 is None
+    # stop=97, RR по TP1 = 15/3 = 5 → OK
+    assert r.valid is True
+    assert r.rr == pytest.approx(5.0)

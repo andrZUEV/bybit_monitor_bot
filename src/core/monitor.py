@@ -162,9 +162,9 @@ class Monitor:
 
         self.states: dict[str, AssetState] = {}
         # Кэш klines для 1H/1D (не дёргаем Bybit на каждый алерт)
-        # symbol -> (timestamp, klines)
-        self._klines_1h_cache: dict[str, tuple[float, list[list]]] = {}
-        self._klines_1d_cache: dict[str, tuple[float, list[list]]] = {}
+        # (symbol, category) -> (timestamp, klines)
+        self._klines_1h_cache: dict[tuple[str, str], tuple[float, list[list]]] = {}
+        self._klines_1d_cache: dict[tuple[str, str], tuple[float, list[list]]] = {}
         self._klines_cache_lock = threading.Lock()
 
         # Risk-конфиг (Этап 4). Строится один раз. Если EQUITY=0 — None,
@@ -361,9 +361,13 @@ class Monitor:
 
                     buttons = []
                     
-                    # Кнопка "Взять в дневник" (если есть план сделки)
+                    # Кнопка "Взять в дневник" (только если есть реальный план)
                     risk = evaluation.get("risk")
-                    if risk is not None:
+                    if (
+                        risk is not None
+                        and risk.stop > 0
+                        and risk.tp1 > 0
+                    ):
                         tp1 = risk.tp1 if risk.tp1 else 0.0
                         tp2 = risk.tp2 if risk.tp2 else 0.0
                         # Формат: vt_take|SYM|ENTRY|SL|TP1|TP2|DIR
@@ -654,15 +658,16 @@ class Monitor:
             return self.client.get_klines(symbol, category, interval, limit)
 
         now = time.time()
+        key = (symbol, category)
         with self._klines_cache_lock:
-            entry = cache.get(symbol)
+            entry = cache.get(key)
             if entry is not None and (now - entry[0]) < ttl:
                 return entry[1]
 
         data = self.client.get_klines(symbol, category, interval, limit)
         if data:
             with self._klines_cache_lock:
-                cache[symbol] = (now, data)
+                cache[key] = (now, data)
         return data
 
     # ==================== WS-КОЛБЭК ====================

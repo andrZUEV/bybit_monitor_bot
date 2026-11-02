@@ -5,6 +5,7 @@
 import json
 import logging
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -107,60 +108,73 @@ class AlertsManager:
         self._lock = threading.RLock()
         self.load()
     
+    @staticmethod
+    def _read_assets(path: Path) -> list[Asset] | None:
+        """
+        Читает файл алертов и возвращает список Asset.
+
+        None — файл отсутствует/битый/не того формата. Вызывающий решает,
+        что делать: восстановить из .bak или оставить текущее состояние.
+        """
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                return None
+            assets: list[Asset] = []
+            for a in data.get("assets", []):
+                if isinstance(a, dict):
+                    asset = Asset.from_dict(a)
+                    if asset.symbol != "UNKNOWN" or asset.alerts:
+                        assets.append(asset)
+            return assets
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            return None
+
     def load(self):
-        """Загружает алерты из файла (потокобезопасно)"""
+        """
+        Загружает алерты из файла (потокобезопасно).
+
+        При ошибке чтения НЕ обнуляет текущее состояние: сначала пробует
+        .bak, иначе оставляет то, что уже в памяти. Иначе транзиентная
+        ошибка I/O + следующее сохранение затирали бы все алерты.
+        """
         with self._lock:
+            assets = self._read_assets(self.storage_path)
+            if assets is not None:
+                self.assets = assets
+                return
+
             if not self.storage_path.exists():
-                self.assets = []
+                # Файла нет (первый запуск или его удалили) — не трогаем
+                # память: при старте она и так пустая.
                 return
-            try:
-                with open(self.storage_path, encoding='utf-8') as f:
-                    data = json.load(f)
-                
-                # Фильтруем только валидные активы
-                valid_assets = []
-                for a in data.get('assets', []):
-                    if isinstance(a, dict):
-                        asset = Asset.from_dict(a)
-                        if asset.symbol != 'UNKNOWN' or asset.alerts:
-                            valid_assets.append(asset)
-                
-                self.assets = valid_assets
-                
-            except json.JSONDecodeError as e:
-                logger.error(f"Ошибка парсинга JSON: {e}. Пробуем .bak")
-                self._try_restore_backup()
-            except Exception as e:
-                logger.error(f"Ошибка загрузки алертов: {e}")
-                self.assets = []
-    
-    def _try_restore_backup(self):
-        """Пытается восстановить из .bak файла"""
-        backup_path = self.storage_path.with_suffix('.json.bak')
-        if backup_path.exists():
-            try:
-                with open(backup_path, encoding='utf-8') as f:
-                    data = json.load(f)
-                
-                valid_assets = []
-                for a in data.get('assets', []):
-                    if isinstance(a, dict):
-                        asset = Asset.from_dict(a)
-                        if asset.symbol != 'UNKNOWN' or asset.alerts:
-                            valid_assets.append(asset)
-                
-                self.assets = valid_assets
-                logger.warning(f"✅ Восстановлено из .bak: {len(self.assets)} активов")
+
+            logger.error(
+                "⚠️ Не удалось прочитать alerts.json — пробую .bak"
+            )
+            backup_path = self.storage_path.with_suffix(".json.bak")
+            backup = self._read_assets(backup_path)
+            if backup is not None:
+                self.assets = backup
+                logger.warning(
+                    f"✅ Восстановлено из .bak: {len(self.assets)} активов"
+                )
                 return
-            except Exception as e:
-                logger.error(f"Не удалось восстановить из .bak: {e}")
-        self.assets = []
-    
+
+            logger.error(
+                "❌ .bak тоже недоступен — оставляю алерты в памяти как есть"
+            )
+
     def save(self) -> None:
         """Атомарная запись через mkstemp + os.replace.
+
         Весь блок под self._lock — иначе при параллельных add_alert
         два потока одновременно зовут os.replace на одном dst, и на
         Windows это даёт WinError 5.
+
+        .bak обновляется КОПИЕЙ только если текущий файл валиден: битый
+        файл не должен вытеснять последнюю хорошую копию.
         """
         with self._lock:
             path = Path(self.storage_path)
@@ -174,14 +188,12 @@ class AlertsManager:
                     json.dump(data, f, indent=2, ensure_ascii=False)
                     f.flush()
                     os.fsync(f.fileno())
-                if path.exists():
+                if path.exists() and self._read_assets(path) is not None:
                     backup_path = path.with_suffix(".json.bak")
                     try:
-                        if backup_path.exists():
-                            backup_path.unlink()
-                        path.rename(backup_path)
-                    except Exception:
-                        pass
+                        shutil.copy2(path, backup_path)
+                    except OSError as e:
+                        logger.warning(f"⚠️ Не удалось обновить .bak: {e}")
                 os.replace(tmp_name, path)
             except Exception:
                 try:

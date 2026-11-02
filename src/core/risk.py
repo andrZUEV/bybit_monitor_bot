@@ -87,8 +87,8 @@ class RiskResult:
     entry: float
     stop: float
     tp1: float
-    tp2: float
-    rr: float               # RR по TP2 (финальная цель)
+    tp2: float | None       # None — второго уровня нет, решение по TP1
+    rr: float               # RR, по которому принимается решение (TP2 или TP1)
     rr_tp1: float           # RR по TP1 (частичная фиксация)
     size: float             # объём в базовом активе
     risk_amount: float      # $ риск
@@ -179,7 +179,7 @@ def validate_setup(
     entry: float,
     stop: float,
     tp1: float,
-    tp2: float,
+    tp2: float | None,
     direction: Direction,
     cfg: RiskConfig,
     atr: float,
@@ -188,11 +188,15 @@ def validate_setup(
     """
     Полная проверка сетапа. Возвращает RiskResult с valid и reason
     (первое нарушение) + soft_reasons (RR в серой зоне и т.п.).
+
+    Если tp2=None (второго уровня нет) — RR считается по TP1,
+    и решение принимается по нему.
     """
     _check_direction(direction)
 
-    rr_tp2 = calc_rr(entry, stop, tp2, direction)
     rr_tp1 = calc_rr(entry, stop, tp1, direction)
+    rr_tp2 = calc_rr(entry, stop, tp2, direction) if tp2 is not None else None
+    rr_for_min = rr_tp2 if rr_tp2 is not None else rr_tp1
     runway_atr = abs(tp1 - entry) / atr if atr > 0 else 0.0
 
     size, risk_amount = calc_position_size(
@@ -201,7 +205,7 @@ def validate_setup(
     )
 
     soft: list[str] = []
-    if SOFT_MIN_RR <= rr_tp2 < cfg.min_rr:
+    if SOFT_MIN_RR <= rr_for_min < cfg.min_rr:
         soft.append("rr_in_grey_zone")
 
     # --- hard filters по порядку приоритета ---
@@ -211,7 +215,7 @@ def validate_setup(
         reason = "risk_above_max"
     elif trend_4h is not None and trend_4h != direction:
         reason = "trend_conflict"
-    elif rr_tp2 < cfg.min_rr:
+    elif rr_for_min < cfg.min_rr:
         reason = "rr_below_min"
     elif atr <= 0:
         reason = "atr_invalid"
@@ -222,7 +226,7 @@ def validate_setup(
 
     return RiskResult(
         entry=entry, stop=stop, tp1=tp1, tp2=tp2,
-        rr=rr_tp2, rr_tp1=rr_tp1,
+        rr=rr_for_min, rr_tp1=rr_tp1,
         size=size, risk_amount=risk_amount, runway_atr=runway_atr,
         valid=(reason == ""),
         reason=reason,
@@ -238,7 +242,7 @@ def build_setup(
     atr: float,
     direction: Direction,
     tp1: float,
-    tp2: float,
+    tp2: float | None,
     cfg: RiskConfig,
     trend_4h: Direction | None = None,
 ) -> RiskResult:
@@ -281,6 +285,7 @@ REASON_RU: dict[str, str] = {
     "atr_invalid":         "ATR недоступен/невалиден",
     "insufficient_runway": "Запас хода до TP1 < 2×ATR",  # ← оставить
     "size_below_min":      "Размер позиции < минимального лота",
+    "no_target":           "Нет цели: следующий уровень не найден",
     "":                    "",
     "worn_level": "Уровень изношен (много касаний)",
 }

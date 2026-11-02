@@ -248,3 +248,43 @@ class TestFormatDivergenceSection:
             current_price=3000.0, evaluation=base_evaluation,
         )
         assert "🧭 <b>Дивергенции:</b>" not in msg
+
+
+class TestPlanWithoutTp2:
+    def test_no_tp2_shows_rr_by_tp1(self):
+        risk = RiskResult(
+            entry=100.0, stop=95.0, tp1=115.0, tp2=None,
+            rr=3.0, rr_tp1=3.0,
+            size=20.0, risk_amount=100.0, runway_atr=5.0,
+            valid=True, reason="", soft_reasons=(),
+        )
+        ev = _legacy_evaluation()
+        ev["risk"] = risk
+
+        msg = format_alert_message(
+            symbol="BTCUSDT", level=100.0, direction="up",
+            current_price=101.0, evaluation=ev,
+        )
+        assert "TP1:" in msg
+        assert "TP2:" not in msg
+        assert "RR:" in msg and "по TP1" in msg
+
+    def test_no_target_hides_plan_numbers(self):
+        risk = RiskResult(
+            entry=100.0, stop=0.0, tp1=0.0, tp2=None,
+            rr=0.0, rr_tp1=0.0,
+            size=0.0, risk_amount=0.0, runway_atr=0.0,
+            valid=False, reason="no_target", soft_reasons=(),
+        )
+        ev = _legacy_evaluation()
+        ev["risk"] = risk
+        ev["hard_filter"] = "no_target"
+        ev["hard_filter_ru"] = "Нет цели: следующий уровень не найден"
+
+        msg = format_alert_message(
+            symbol="BTCUSDT", level=100.0, direction="up",
+            current_price=101.0, evaluation=ev,
+        )
+        assert "нет цели" in msg
+        assert "Entry:" not in msg
+        assert "TP1:" not in msg

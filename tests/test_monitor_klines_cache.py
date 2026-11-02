@@ -121,3 +121,15 @@ def test_unknown_interval_no_cache():
     calls = [c for c in m.client.calls if c[2] == "5"]
     # Без кэша — оба раза в REST
     assert len(calls) == 2
+
+
+def test_same_symbol_different_categories_separate_cache():
+    """spot и linear по одному тикеру — разные свечи, общий кэш нельзя."""
+    m = _make_monitor()
+    m.client.response["60"] = [[0, "1", "1", "1", "1", "1"]]
+
+    m._get_klines_cached("BTCUSDT", "linear", "60", 300, ttl=3600)
+    m._get_klines_cached("BTCUSDT", "spot", "60", 300, ttl=3600)
+
+    calls = [c for c in m.client.calls if c[2] == "60"]
+    assert len(calls) == 2
