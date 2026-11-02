@@ -48,14 +48,17 @@ def cancel_keyboard() -> InlineKeyboardMarkup:
 
 
 def alerts_list_keyboard(
-    rows: list[tuple[str, float, str]],
+    rows: list[tuple],
     page: int = 0,
     pages: int = 1,
 ) -> InlineKeyboardMarkup:
     """
     Клавиатура для одной страницы списка алертов.
 
-    rows: [(symbol, price, direction)] — только алерты текущей страницы.
+    rows: [(symbol, price, direction[, label])] — только алерты текущей страницы.
+    `label` (Этап 10) — готовая подпись для кнопки: зона показывается
+    диапазоном, точка — числом. Без четвёртого элемента подпись строится
+    по `price`, поэтому старые вызовы работают как раньше.
     Для каждого символа на странице добавляется кнопка «удалить все»,
     плюс кнопки навигации ←/→ и возврат в меню.
     """
@@ -63,7 +66,10 @@ def alerts_list_keyboard(
     dir_emoji = {"up": "🟢", "down": "🔴", "any": "⚪️"}
     seen_symbols: set[str] = set()
 
-    for symbol, price, direction in rows:
+    for row in rows:
+        symbol, price, direction = row[0], row[1], row[2]
+        label_price = row[3] if len(row) > 3 else f"{price:,.2f}"
+
         if symbol not in seen_symbols:
             seen_symbols.add(symbol)
             keyboard.append([
@@ -74,7 +80,7 @@ def alerts_list_keyboard(
             ])
 
         emoji = dir_emoji.get(direction, "❓")
-        label = f"   {emoji} {symbol} @ {price:,.2f}"
+        label = f"   {emoji} {symbol} @ {label_price}"
         callback = f"del|{symbol}|{price}|{direction}|{page}"
         keyboard.append([InlineKeyboardButton(label, callback_data=callback)])
 

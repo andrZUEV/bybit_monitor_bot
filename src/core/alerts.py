@@ -22,18 +22,63 @@ MAX_NOTE_LENGTH = 500
 
 @dataclass
 class AlertRule:
-    """Правило алерта для конкретного уровня"""
+    """Правило алерта: точка (`price`) или зона (`price_low`/`price_high`).
+
+    Этап 10: зона — это диапазон, внутри которого цена считается «на уровне».
+    Старые записи без границ читаются как точечные (`is_zone == False`),
+    поэтому миграция файла `alerts.json` не нужна.
+    """
     price: float
     direction: str  # 'up', 'down', 'any'
     setup_note: str = ""
     created_at: float = field(default_factory=time.time)
-    
+    # Нижняя/верхняя границы зоны. None/None — точечный алерт.
+    price_low: float | None = None
+    price_high: float | None = None
+
+    # ---------- Зона ----------
+
+    @property
+    def is_zone(self) -> bool:
+        return (
+            self.price_low is not None
+            and self.price_high is not None
+            and self.price_high > self.price_low
+        )
+
+    @property
+    def low(self) -> float:
+        """Нижняя граница: у точки совпадает с ценой."""
+        return float(self.price_low) if self.is_zone else float(self.price)
+
+    @property
+    def high(self) -> float:
+        """Верхняя граница: у точки совпадает с ценой."""
+        return float(self.price_high) if self.is_zone else float(self.price)
+
+    def zone_label(self, fmt: str = ",.4f") -> str:
+        """Подпись для сообщений: '66,000.0000–66,500.0000' или '66,000.0000'."""
+        if self.is_zone:
+            return f"{self.low:{fmt}}–{self.high:{fmt}}"
+        return f"{self.price:{fmt}}"
+
+    def overlaps(self, other: "AlertRule") -> bool:
+        """Пересекаются ли диапазоны при одинаковом направлении (дедуп)."""
+        if self.direction != other.direction:
+            return False
+        return self.low <= other.high and other.low <= self.high
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
     
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Optional['AlertRule']:
-        """Безопасное создание из словаря с игнорированием битых записей"""
+        """Безопасное создание из словаря с игнорированием битых записей.
+
+        Миграция Этапа 10: файл без `price_low`/`price_high` даёт точечный
+        алерт; вывернутая зона (`high < low`) разворачивается; одиночная
+        граница игнорируется — лучше точка, чем полузона.
+        """
         try:
             # Если data - это строка (например, случайно записалось "up" вместо dict), игнорируем
             if isinstance(data, str):
@@ -43,17 +88,45 @@ class AlertRule:
             direction = str(data.get('direction', 'any'))
             setup_note = str(data.get('setup_note', ''))
             created_at = float(data.get('created_at', time.time()))
-            
+
+            price_low, price_high = cls._read_bounds(data)
+            if price_low is not None and price_high is not None and price <= 0:
+                # Старая запись могла потерять price — центр зоны его заменит.
+                price = (price_low + price_high) / 2
+
             return cls(
                 price=price,
                 direction=direction,
                 setup_note=setup_note,
-                created_at=created_at
+                created_at=created_at,
+                price_low=price_low,
+                price_high=price_high,
             )
         except (ValueError, TypeError, AttributeError) as e:
             logger.warning(f"⚠️ Пропущен некорректный алерт: {data}. Ошибка: {e}")
             return None
-    
+
+    @staticmethod
+    def _read_bounds(data: dict[str, Any]) -> tuple[float | None, float | None]:
+        """Читает границы зоны, нормализуя порядок и отбрасывая полузоны."""
+        raw_low = data.get('price_low')
+        raw_high = data.get('price_high')
+        try:
+            low = float(raw_low) if raw_low not in (None, "") else None
+            high = float(raw_high) if raw_high not in (None, "") else None
+        except (TypeError, ValueError):
+            return None, None
+
+        if low is None or high is None:
+            return None, None
+        if high < low:
+            low, high = high, low
+        if high == low:
+            return None, None
+        if low <= 0:
+            return None, None
+        return low, high
+
     def __eq__(self, other):
         if not isinstance(other, AlertRule):
             return False
@@ -214,25 +287,38 @@ class AlertsManager:
         direction: str,
         category: str = "linear",
         setup_note: str = "",
+        price_low: float | None = None,
+        price_high: float | None = None,
     ) -> tuple:
 
-        """Добавляет алерт. Возвращает (success, replaced)"""
+        """Добавляет алерт (точку или зону). Возвращает (success, replaced).
+
+        Дедуп с Этапа 10: заменяем алерт, если у того же символа и **того же
+        направления** диапазоны пересекаются. Раньше сравнивалась только цена
+        и игнорировалось направление — «down» затирал «up» на той же цене.
+        """
         symbol = symbol.upper()
         if direction not in ['up', 'down', 'any']:
             return False, False
-        
+
+        center, low, high = self._normalize_zone(price, price_low, price_high)
+        if center <= 0:
+            return False, False
+
         new_rule = AlertRule(
-            price=float(price),
+            price=center,
             direction=direction,
             setup_note=(setup_note or "").strip()[:MAX_NOTE_LENGTH],
+            price_low=low,
+            price_high=high,
         )
-        
+
         with self._lock:
             for asset in self.assets:
                 if asset.symbol == symbol:
                     existing_idx = None
                     for i, rule in enumerate(asset.alerts):
-                        if rule.price == new_rule.price:
+                        if rule.overlaps(new_rule):
                             existing_idx = i
                             break
                     
@@ -252,6 +338,36 @@ class AlertsManager:
         
         self.save()
         return True, False
+
+    @staticmethod
+    def _normalize_zone(
+        price: float,
+        price_low: float | None,
+        price_high: float | None,
+    ) -> tuple[float, float | None, float | None]:
+        """Приводит границы зоны в порядок. Полузона превращается в точку."""
+        try:
+            center = float(price)
+        except (TypeError, ValueError):
+            center = 0.0
+
+        if price_low is None or price_high is None:
+            return center, None, None
+        try:
+            low = float(price_low)
+            high = float(price_high)
+        except (TypeError, ValueError):
+            return center, None, None
+
+        if high < low:
+            low, high = high, low
+        if high <= 0 or low <= 0:
+            return center, None, None
+        if high == low:
+            return low, None, None
+        if center <= 0:
+            center = (low + high) / 2
+        return center, low, high
     
     def remove_alert(self, symbol: str, price: float, direction: str) -> bool:
         """Удаляет конкретный алерт"""

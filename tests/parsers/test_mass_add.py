@@ -479,3 +479,83 @@ class TestMultilineBlocks:
         assert len(r.skipped) == 1
         assert r.skipped[0].raw == "мусор"
         assert r.skipped[0].reason == "формат"
+
+class TestZoneParsing:
+    """Этап 10: «цена или зона» — SYMBOL LOW-HIGH DIR [NOTE]."""
+
+    def test_range_with_hyphen(self):
+        r = parse_mass_add("BTCUSDT 64000-66500 up зона")
+
+        assert len(r.valid) == 1
+        p = r.valid[0]
+        assert p.symbol == "BTCUSDT"
+        assert (p.price_low, p.price_high) == (64000.0, 66500.0)
+        assert p.price == 65250.0
+        assert p.direction == "up"
+        assert p.setup_note == "зона"
+
+    def test_range_with_en_dash(self):
+        r = parse_mass_add("ETHUSDT 3000–3100 down ретест")
+
+        assert len(r.valid) == 1
+        p = r.valid[0]
+        assert (p.price_low, p.price_high) == (3000.0, 3100.0)
+        assert p.direction == "down"
+
+    def test_reversed_range_is_normalized(self):
+        r = parse_mass_add("SOLUSDT 200-150 up")
+
+        assert len(r.valid) == 1
+        p = r.valid[0]
+        assert (p.price_low, p.price_high) == (150.0, 200.0)
+
+    def test_range_without_note(self):
+        r = parse_mass_add("BTCUSDT 64000-66500 any")
+
+        assert len(r.valid) == 1
+        assert r.valid[0].setup_note is None
+
+    def test_point_has_no_bounds(self):
+        r = parse_mass_add("BTCUSDT 65000 up")
+
+        assert len(r.valid) == 1
+        p = r.valid[0]
+        assert p.price_low is None
+        assert p.price_high is None
+        assert p.price == 65000.0
+
+    def test_zero_price_goes_to_skipped(self):
+        r = parse_mass_add("BTCUSDT 0 up")
+
+        assert r.valid == []
+        assert len(r.skipped) == 1
+        assert r.skipped[0].reason == "цена"
+
+    def test_zero_low_in_range_goes_to_skipped(self):
+        r = parse_mass_add("BTCUSDT 0-100 up")
+
+        assert r.valid == []
+        assert len(r.skipped) == 1
+        assert r.skipped[0].reason == "цена"
+
+    def test_broken_range_goes_to_skipped(self):
+        r = parse_mass_add("BTCUSDT 100-abc up")
+
+        assert r.valid == []
+        assert len(r.skipped) == 1
+        assert r.skipped[0].reason == "цена"
+
+    def test_price_label_for_zone_and_point(self):
+        zone = parse_mass_add("BTCUSDT 64000-66500 up").valid[0]
+        point = parse_mass_add("BTCUSDT 65000 up").valid[0]
+
+        assert zone.price_label() == "64,000.00–66,500.00"
+        assert point.price_label() == "65,000.00"
+
+    def test_zone_in_multiline_bulk(self):
+        text = "BTCUSDT 64000-66500 up зона\nETHUSDT 3000 down ретест"
+        r = parse_mass_add(text)
+
+        assert len(r.valid) == 2
+        assert r.valid[0].price_low == 64000.0
+        assert r.valid[1].price_low is None

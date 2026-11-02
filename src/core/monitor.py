@@ -229,6 +229,15 @@ class Monitor:
 
     # ==================== ПРОВЕРКА ЦЕН ====================
 
+    @staticmethod
+    def _distance_to_zone(price: float, low: float, high: float) -> float:
+        """Расстояние от цены до зоны (0, если цена внутри)."""
+        if low <= price <= high:
+            return 0.0
+        if price < low:
+            return low - price
+        return price - high
+
     def _check_price_cross(
         self,
         asset: Asset,
@@ -249,19 +258,24 @@ class Monitor:
         curr = ticker.price
 
         for rule in asset.alerts:
-            target = float(rule.price)
             direction = rule.direction
+            # Центр/точка: стабильный ключ кулдауна, истории и callback'ов.
+            target = float(rule.price)
+            # Этап 10: вход в зону определяется её границей, а не центром.
+            # Для точечного алерта low == high == price, поэтому логика
+            # остаётся прежней.
+            low, high = rule.low, rule.high
             alert_key = f"{target}_{direction}"
 
-            crossed_up = prev < target and curr >= target
-            crossed_down = prev > target and curr <= target
+            crossed_up = prev < low and curr >= low
+            crossed_down = prev > high and curr <= high
 
             if not (crossed_up or crossed_down):
-                # Сброс флага, если цена отошла от уровня
-                if direction == "up" and curr < target or direction == "down" and curr > target:
+                # Сброс флага, если цена отошла от уровня/зоны
+                if direction == "up" and curr < low or direction == "down" and curr > high:
                     state.triggered_alerts[alert_key] = False
                 elif direction == "any":
-                    distance = abs(curr - target) / target if target > 0 else 0
+                    distance = self._distance_to_zone(curr, low, high) / target if target > 0 else 0
                     if distance > self.price_reset_threshold:
                         state.triggered_alerts[alert_key] = False
                 continue
@@ -378,6 +392,7 @@ class Monitor:
                         evaluation=evaluation,
                         setup_note=rule.setup_note,
                         probability_line=probability_line,
+                        level_label=rule.zone_label(",.4f" if rule.is_zone else ",.2f"),
                     )
 
                     buttons = []

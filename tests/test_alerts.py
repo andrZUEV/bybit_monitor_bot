@@ -135,7 +135,7 @@ class TestAlertsManager:
         mgr = AlertsManager(storage_path=alerts_path)
         for i in range(100):
             mgr.add_alert(
-                symbol=f"U{i}USDT", price=float(i), direction="up",
+                symbol=f"U{i}USDT", price=float(i + 1), direction="up",
                 category="linear", setup_note="",
             )
         assert len(mgr.get_all_alerts()) == 100

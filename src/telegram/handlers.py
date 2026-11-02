@@ -344,7 +344,8 @@ class TelegramHandlers(
             )
             clean_note = p.setup_note or ""
             success, replaced = self.alerts_manager.add_alert(
-                p.symbol, p.price, p.direction, category, clean_note
+                p.symbol, p.price, p.direction, category, clean_note,
+                price_low=p.price_low, price_high=p.price_high,
             )
             dir_text = {
                 "up": "снизу вверх 🟢",
@@ -359,7 +360,7 @@ class TelegramHandlers(
                 verb = "Обновлено" if replaced else "Добавлено"
                 await update.message.reply_text(
                     f"✅ <b>{verb}:</b>\n"
-                    f"🪙 {p.symbol}\n💰 {p.price:,.2f}\n"
+                    f"🪙 {p.symbol}\n💰 {p.price_label()}\n"
                     f"🎯 {dir_text[p.direction]}{note_display}",
                     parse_mode="HTML",
                     reply_markup=self._main_menu_kb(),
@@ -374,8 +375,10 @@ class TelegramHandlers(
         # Если не распарсили — общий «не понял»
         await update.message.reply_text(
             "❓ Не понял команду. Проверьте формат:\n"
-            "<code>TICKER PRICE DIR [ОПИСАНИЕ]</code>\n"
-            "Например: <code>BTC 65000 up пробой хая</code>",
+            "<code>TICKER PRICE DIR [ОПИСАНИЕ]</code> или "
+            "<code>TICKER LOW-HIGH DIR [ОПИСАНИЕ]</code>\n"
+            "Например: <code>BTC 65000 up пробой хая</code> или "
+            "<code>BTC 64000-65000 up зона</code>",
             parse_mode="HTML",
             reply_markup=self._main_menu_kb(),
         )
@@ -430,7 +433,8 @@ class TelegramHandlers(
             )
             clean_note = p.setup_note or ""
             success, replaced = self.alerts_manager.add_alert(
-                p.symbol, p.price, p.direction, category, clean_note
+                p.symbol, p.price, p.direction, category, clean_note,
+                price_low=p.price_low, price_high=p.price_high,
             )
             if success:
                 if replaced:
@@ -1093,7 +1097,7 @@ class TelegramHandlers(
         """Список алертов с пагинацией по 10 штук."""
         assets = self.alerts_manager.get_all_alerts()
         rows = [
-            (asset.symbol, alert.price, alert.direction, alert.setup_note or "")
+            (asset.symbol, alert, alert.setup_note or "")
             for asset in assets
             for alert in asset.alerts
         ]
@@ -1114,7 +1118,7 @@ class TelegramHandlers(
             )
             dir_text = {"up": "🟢", "down": "🔴", "any": "⚪️"}
             current_symbol: str | None = None
-            for symbol, price, direction, note in chunk:
+            for symbol, alert, note in chunk:
                 if symbol != current_symbol:
                     if current_symbol is not None:
                         text += "\n"
@@ -1125,12 +1129,15 @@ class TelegramHandlers(
                     f" | 📝 <i>{note_escaped}</i>" if note_escaped else ""
                 )
                 text += (
-                    f"   • {price:,.4f} "
-                    f"{dir_text.get(direction, '')}{note_display}\n"
+                    f"   • {alert.zone_label(',.4f')} "
+                    f"{dir_text.get(alert.direction, '')}{note_display}\n"
                 )
 
             keyboard = keyboards.alerts_list_keyboard(
-                [(symbol, price, direction) for symbol, price, direction, _ in chunk],
+                [
+                    (symbol, alert.price, alert.direction, alert.zone_label(',.4f'))
+                    for symbol, alert, _ in chunk
+                ],
                 page,
                 pages,
             )
@@ -1155,6 +1162,11 @@ class TelegramHandlers(
             "<b>Формат быстрого добавления:</b>\n"
             "<code>TICKER PRICE DIR [NOTE]</code>\n"
             "Пример: <code>BTC 85000 up пробой</code> или <code>BTCUSDT 85000 up пробой</code>\n\n"
+            "<b>Зона вместо цены:</b>\n"
+            "<code>TICKER LOW-HIGH DIR [NOTE]</code>\n"
+            "Пример: <code>BTC 84000-85000 down зона</code> — алерт сработает "
+            "при входе цены в диапазон.\n"
+            "Можно и через тире-длинное: <code>84000–85000</code>.\n\n"
             "<b>DIR:</b> up | down | any\n\n"
             "<b>Массовое добавление:</b> отправьте несколько строк:\n"
             "<code>BTC 85000 up пробой\n"

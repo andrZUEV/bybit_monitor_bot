@@ -896,6 +896,7 @@ def format_alert_message(
     evaluation: dict[str, Any],
     setup_note: str = "",
     probability_line: str | None = None,
+    level_label: str | None = None,
 ) -> str:
     """
     Форматирует сообщение алерта в HTML для Telegram.
@@ -926,7 +927,8 @@ def format_alert_message(
 
     # 1. Шапка
     lines.append(f"🚨 <b>Price Alert: {html_escape(symbol)}</b>")
-    lines.append(f"Уровень: <code>{level:,.2f}</code> | {cross_text}")
+    level_text = level_label if level_label else f"{level:,.2f}"
+    lines.append(f"Уровень: <code>{level_text}</code> | {cross_text}")
     lines.append(f"💰 Цена: <code>{current_price:,.2f}</code>")
 
     # 2. План сделки

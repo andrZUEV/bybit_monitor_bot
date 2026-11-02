@@ -33,6 +33,50 @@ _SYMBOL_RE = re.compile(r"^[A-Z]{2,15}USDT$")
 # Квоты, которые мы НЕ поддерживаем — если встретили суффикс, скипаем с "не USDT".
 _UNSUPPORTED_QUOTES = ("USDC", "BTC", "ETH", "BUSD", "TUSD", "DAI")
 
+# Разделители диапазона цены: "66000-66500", "66000–66500", "66000 — 66500".
+_RANGE_SEP_RE = re.compile(r"[-–—]")
+
+# Токен «похож на цену»: цифра или разделитель диапазона + цифра.
+# Нужен, чтобы строка с битой ценой («BTC -5 up») попадала в skipped
+# с причиной «цена», а не игнорировалась молча.
+_NUMERIC_START_RE = re.compile(r"^[-–—]?\d")
+
+
+def parse_price_range(raw: str) -> tuple[float, float] | None:
+    """Парсит «цену или зону»: '65000' → (65000, 65000), '64000-66500' → границы.
+
+    None — токен не является числом/диапазоном (или зона вывернута/неположительна).
+    Цена — всегда положительная, поэтому '-' можно считать разделителем,
+    а не знаком минус.
+    """
+    if not raw:
+        return None
+    token = raw.strip().replace(",", ".")
+    if not token:
+        return None
+
+    if _RANGE_SEP_RE.search(token):
+        parts = [p.strip() for p in _RANGE_SEP_RE.split(token) if p.strip()]
+        if len(parts) != 2:
+            return None
+        try:
+            low, high = float(parts[0]), float(parts[1])
+        except ValueError:
+            return None
+        if low <= 0 or high <= 0:
+            return None
+        if high < low:
+            low, high = high, low
+        return low, high
+
+    try:
+        price = float(token)
+    except ValueError:
+        return None
+    if price <= 0:
+        return None
+    return price, price
+
 
 # ==================== МАППИНГИ ====================
 
@@ -55,10 +99,19 @@ class ParsedLine:
     raw: str                    # исходная строка (как пришла, до strip)
     line_no: int                # 1-based номер во входном тексте
     symbol: str                 # "BTCUSDT"
-    price: float
+    price: float                # центр (или сама цена у точки)
     direction_raw: str          # как ввёл пользователь: "up", "вверх", "LONG"
     direction: str              # нормализовано: "up" | "down" | "any"
     setup_note: str | None   # всё после direction или None
+    # Этап 10: границы зоны. None/None — точечный алерт.
+    price_low: float | None = None
+    price_high: float | None = None
+
+    def price_label(self) -> str:
+        """Подпись цены для сообщений: диапазон или число."""
+        if self.price_low is not None and self.price_high is not None:
+            return f"{self.price_low:,.2f}–{self.price_high:,.2f}"
+        return f"{self.price:,.2f}"
 
 
 @dataclass(frozen=True)
@@ -176,11 +229,9 @@ def _looks_like_ticker_start(raw: str) -> bool:
         return False
     if not re.match(r"^[A-Za-z][A-Za-z0-9]{1,14}$", parts[0]):
         return False
-    try:
-        float(parts[1].replace(",", "."))
-    except ValueError:
-        return False
-    return True
+    # Второй токен — цена или зона ("65000" / "64000-66500" / битая "-5").
+    token = parts[1].strip().replace(",", ".")
+    return bool(token) and bool(_NUMERIC_START_RE.match(token))
 
 
 def _group_into_blocks(text: str) -> list[list[tuple[int, str]]]:
@@ -266,15 +317,16 @@ def _parse_block(
         )
 
     try:
-        price = float(price_raw.replace(",", "."))
-    except ValueError:
+        price_low, price_high = parse_price_range(price_raw)
+    except (TypeError, ValueError):
         return None, SkippedLine(
             line_no=line_no_first, raw=first_raw, reason="цена",
         )
-    if price <= 0:
-        return None, SkippedLine(
-            line_no=line_no_first, raw=first_raw, reason="цена",
-        )
+
+    price = (price_low + price_high) / 2
+    # Точка и зона отличаются только наличием границ.
+    zone_low: float | None = price_low if price_high > price_low else None
+    zone_high: float | None = price_high if price_high > price_low else None
 
     direction = normalize_direction(direction_raw)
     if direction is None:
@@ -310,6 +362,8 @@ def _parse_block(
             direction_raw=direction_raw,
             direction=direction,
             setup_note=setup_note,
+            price_low=zone_low,
+            price_high=zone_high,
         ),
         None,
     )

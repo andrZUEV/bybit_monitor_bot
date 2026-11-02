@@ -74,7 +74,8 @@ class TestSingleLineAdd:
         await handlers.handle_text(update, None)
 
         alerts_manager_mock.add_alert.assert_called_once_with(
-            "BTCUSDT", 65000.0, "up", "linear", "пробой"
+            "BTCUSDT", 65000.0, "up", "linear", "пробой",
+            price_low=None, price_high=None,
         )
         reply_text = update.message.reply_text
         assert reply_text.await_count == 1
@@ -87,7 +88,8 @@ class TestSingleLineAdd:
         await handlers.handle_text(update, None)
 
         alerts_manager_mock.add_alert.assert_called_once_with(
-            "BTCUSDT", 3200.0, "down", "linear", ""
+            "BTCUSDT", 3200.0, "down", "linear", "",
+            price_low=None, price_high=None,
         )
 
     async def test_symbol_normalized_from_short(self, handlers, alerts_manager_mock):
@@ -179,7 +181,7 @@ class TestBulkAdd:
         calls = [c.args for c in alerts_manager_mock.add_alert.call_args_list]
         assert calls[0] == ("BTCUSDT", 65000.0, "up", "linear", "пробой")
         assert calls[1] == ("ETHUSDT", 3200.0, "down", "linear", "ретест")
-        assert calls[2] == ("SOLUSDT", 150.0, "up", "linear", "")
+        assert calls[2][:5] == ("SOLUSDT", 150.0, "up", "linear", "")
 
         text_sent = update.message.reply_text.await_args.args[0]
         assert "Добавлено: <b>3</b>" in text_sent
